@@ -45,3 +45,14 @@ The two `.bin` files total **790 bytes** and reproduce the patch already embedde
 Original BirriaSDR code, flowgraph, assembly and documentation are **[MIT licensed](https://opensource.org/license/mit)**. **Use at your own risk. The software is provided as is, without warranty; the MIT terms below include the disclaimer of liability.**
 
 The included driver retains its BSD-3-Clause-Clear notices. Downloaded MediaTek firmware and separately installed dependencies retain their own licenses. Full third-party notices are included near the top of the flowgraph's Python code, after the settings.
+
+## Acknowledgements
+
+BirriaSDR builds on open-source drivers and earlier research into using Wi-Fi hardware for raw I/Q capture. Thanks to:
+
+- [Network Weather’s mt76-usb-macos](https://github.com/Network-Weather/mt76-usb-macos) — the Python userspace USB driver that provided the foundation for BirriaSDR’s device access and firmware loading.
+- [mt76](https://github.com/openwrt/mt76) and its contributors — the upstream MediaTek driver implementation underlying that userspace work.
+- [W1700K SDR](https://github.com/h0m3us3r/w1700k-sdr) by h0m3us3r — related work turning MediaTek Wi-Fi hardware into a wideband SDR, with useful documentation of capture registers and sample-clock controls.
+- [MtkICAPtool](https://github.com/MtkWifiRev/MtkICAPtool) by MtkWifiRev — earlier work exposing MediaTek’s internal I/Q capture capabilities.
+
+Third-party code retains its original licenses and copyright notices.
