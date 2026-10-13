@@ -13,7 +13,7 @@ https://github.com/user-attachments/assets/64e9fbbd-1f16-4c7b-905c-5624b9c574b7
 1. Install **CyberEther** (https://cyberether.org/) and Python 3.11+.
 2. Select that Python under **Settings → Runtime → Python Runtime**, then restart CyberEther if you changed it.
 3. Connect a COMFAST MT7961/MT7921AU dongle. Disconnect its Wi-Fi connection first.
-4. Download [mediatek-usb-sdr.yml](mediatek-usb-sdr.yml) and open it in CyberEther. Allow its declared Python dependencies to install. Stock firmware downloads automatically, with checksum verification and caching.
+4. Download [birriaSDR.yml](mediatek-usb-sdr.yml) and open it in CyberEther. Allow its declared Python dependencies to install. Stock firmware downloads automatically, with checksum verification and caching.
 5. Leave `PYTHON=None`. Edit `CHANNEL` near the top of the Python block to tune, then reload. The default is channel 6 (2437 MHz).
 
 **Linux:** the USB worker uses `sudo -n`; it must have permission to run without a password prompt. With USB permissions already configured, set `USE_SUDO=False`. **macOS:** direct USB access is the default.
