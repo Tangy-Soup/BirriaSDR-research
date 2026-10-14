@@ -1,6 +1,8 @@
-
-
 # BirriaSDR
+
+> [!IMPORTANT]
+>
+> This is an experimental proof-of-concept. The production-quality library and the full documentation of the registers will be posted later.
 
 Turn a supported USB 3.0 Wi-Fi dongle (MT7961/MT7921AU) into an experimental **2.4/5 GHz SDR receiver** with **14-bit I/Q at 40 MSps complex**, using a single CyberEther flowgraph. This is an experimental script. Use at your own risk.
 
