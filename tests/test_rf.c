@@ -108,8 +108,9 @@ static void initialize(struct model *model, birriasdr_dev_t *dev)
     }
 }
 
-/* Compare every write/order against the established Python receiver. This
+/* Compare bootstrap write/order against the established Python receiver. This
  * catches missing wake steps, bank swaps, constants and ordering regressions.
+ * The later matched-filter setup is covered independently by test_filter.
  */
 static void test_trace(const char *path)
 {
@@ -181,11 +182,178 @@ static void test_failures(void)
     CHECK(mt_restore_gain(&dev) == 0 && !dev.mt7921.gain_saved);
 }
 
+/* Repeated updates retain the boot baseline, preserve unowned fields and roll
+ * back to the preceding manual setting when a later register write fails.
+ */
+static void test_gain_updates(void)
+{
+    struct model model;
+    birriasdr_dev_t dev;
+    struct birriasdr_gain gain = {1, 4, 6};
+    uint32_t previous[4];
+    initialize(&model, &dev);
+    dev.manual = false;
+    put(&model, 0, 0x830000c4, 0x08080808);
+    put(&model, 17, 0x768, 0x00551234);
+    CHECK(mt_change_gain(&dev, true, &gain) == BIRRIASDR_ERROR_STATE);
+    CHECK(mt_apply_gain(&dev) == 0 && dev.mt7921.gain_saved);
+    CHECK(model.written == 0);
+    CHECK(mt_change_gain(&dev, true, &gain) == 0);
+    CHECK(get(&model, 0, 0x830000c4) == 0x4949490f);
+    CHECK(get(&model, 0, 0x83000108) == 0x06060000);
+    CHECK(get(&model, 17, 0x768) == 0x8a551234);
+    previous[0] = get(&model, 0, 0x830000c4);
+    previous[1] = get(&model, 0, 0x83000108);
+    previous[2] = get(&model, 0, 0x83000150);
+    previous[3] = get(&model, 17, 0x768);
+    gain = (struct birriasdr_gain){2, 8, 0};
+    model.fail_address = 0x83000150;
+    CHECK(mt_change_gain(&dev, true, &gain) == BIRRIASDR_ERROR_IO);
+    CHECK(get(&model, 0, 0x830000c4) == previous[0]);
+    CHECK(get(&model, 0, 0x83000108) == previous[1]);
+    CHECK(get(&model, 0, 0x83000150) == previous[2]);
+    CHECK(get(&model, 17, 0x768) == previous[3]);
+    CHECK(mt_change_gain(&dev, true, &gain) == 0);
+    CHECK(mt_change_gain(&dev, false, &gain) == 0 && dev.mt7921.gain_saved);
+    CHECK(get(&model, 0, 0x830000c4) == 0x08080808);
+    CHECK(get(&model, 17, 0x768) == 0x00551234);
+    CHECK(mt_change_gain(&dev, true, &gain) == 0);
+    CHECK(mt_restore_gain(&dev) == 0 && !dev.mt7921.gain_saved);
+    CHECK(get(&model, 17, 0x768) == 0x00551234);
+    gain.digital = 13;
+    CHECK(mt_change_gain(&dev, true, &gain) == BIRRIASDR_ERROR_INVALID);
+}
+
+/* A parked retune must target SPI 0's secondary oscillator, leave the other
+ * oscillator untouched, and restore routing on both success and failure.
+ * An active capture/GO must reject the operation without any RF writes.
+ */
+static void test_retune(void)
+{
+    struct model model;
+    birriasdr_dev_t dev;
+    size_t before;
+    initialize(&model, &dev);
+    atomic_init(&dev.run_state, BS_IDLE);
+    put(&model, 0, MT_MAILBOX + 28, 1);
+    put(&model, 16, 0x240, 0x00123456);
+    put(&model, 16, 0xc68, 0x06f00000);
+    CHECK(mt_retune_2g_probe(&dev, UINT64_C(2400000114), 18) == 0);
+    CHECK(get(&model, 16, 0xca8) == 0x05000004);
+    CHECK(get(&model, 16, 0xc68) == 0x06f00000);
+    CHECK(get(&model, 16, 0x240) == 0x00123456);
+    CHECK(get(&model, 17, 0xca8) == 0);
+    CHECK(dev.frequency == UINT64_C(2437000000));
+    model.fail_address = 0xce0;
+    CHECK(mt_retune_2g_probe(&dev, UINT64_C(2400000114), 18) == BIRRIASDR_ERROR_IO);
+    CHECK(get(&model, 16, 0x240) == 0x00123456);
+    CHECK((get(&model, 16, 0xcc4) & 0x60000000) == 0);
+    CHECK((get(&model, 16, 0xcc8) & 1) == 0);
+    CHECK(get(&model, 16, 0xce0) == 0);
+    CHECK((get(&model, 16, 0xd20) & 4) != 0);
+    before = model.written;
+    put(&model, 0, MT_MAILBOX + 60, 1);
+    CHECK(mt_retune_2g_probe(&dev, UINT64_C(2437000000), 18) == BIRRIASDR_ERROR_STATE);
+    CHECK(model.written == before);
+    put(&model, 0, MT_MAILBOX + 60, 0);
+    put(&model, 0, 0x80021090, 0x4f3);
+    CHECK(mt_retune_2g_probe(&dev, UINT64_C(2437000000), 18) == BIRRIASDR_ERROR_STATE);
+    CHECK(model.written == before);
+    put(&model, 0, 0x80021090, 0x4f1);
+    atomic_store(&dev.run_state, BS_RUNNING);
+    CHECK(mt_retune_2g_probe(&dev, UINT64_C(2437000000), 18) == BIRRIASDR_ERROR_BUSY);
+    CHECK(model.written == before);
+    atomic_store(&dev.run_state, BS_IDLE);
+    put(&model, 16, 0xd7c, 0);
+    CHECK(mt_retune_2g_probe(&dev, UINT64_C(2437000000), 18) == BIRRIASDR_ERROR_TIMEOUT);
+    CHECK(get(&model, 16, 0x240) == 0x00123456);
+    CHECK((get(&model, 16, 0xcc4) & 0x60000000) == 0);
+    CHECK((get(&model, 16, 0xcc8) & 1) == 0);
+    CHECK(get(&model, 16, 0xce0) == 0);
+}
+
+/* Startup must preserve the companion setup before moving the selected LO.
+ * Live retuning must leave capture/GO and gain untouched, restore routing and
+ * roll back a failed calibration to the previous center without an API commit.
+ */
+static void test_public_tuning(void)
+{
+    struct model model;
+    birriasdr_dev_t dev;
+    size_t before;
+    initialize(&model, &dev);
+    dev.frequency = UINT64_C(2300000000);
+    CHECK(mt_configure_rf(&dev) == 0);
+    CHECK(get(&model, 16, 0xca8) == 0x04caaaab);
+    CHECK(get(&model, 16, 0xc68) == 0x06f00000);
+    CHECK(get(&model, 17, 0xc68) == 0x0513bbbc);
+    CHECK(get(&model, 16, 0x240) == 0);
+    put(&model, 0, MT_MAILBOX + 60, 1);
+    put(&model, 0, 0x80021090, 0x24f3);
+    put(&model, 17, 0x768, 0x94123456);
+    before = model.written;
+    CHECK(mt_change_frequency(&dev, UINT64_C(2437123456)) == 0);
+    CHECK(get(&model, 16, 0xca8) == 0x0513cc97);
+    CHECK(get(&model, 0, MT_MAILBOX + 60) == 1);
+    CHECK(get(&model, 0, 0x80021090) == 0x24f3);
+    CHECK(get(&model, 17, 0x768) == 0x94123456);
+    for (size_t i = before; i < model.written; ++i)
+        CHECK(model.writes[i].space == 16); /* Only the selected analog bank. */
+    dev.frequency = UINT64_C(2437123456); /* Simulate the API's successful commit. */
+    model.fail_address = 0xce0;
+    CHECK(mt_change_frequency(&dev, MT_RF_MIN_HZ) == BIRRIASDR_ERROR_IO);
+    CHECK(get(&model, 16, 0xca8) == 0x0513cc97);
+    CHECK(dev.frequency == UINT64_C(2437123456));
+    CHECK(get(&model, 16, 0x240) == 0);
+    CHECK((get(&model, 16, 0xcc4) & 0x60000000) == 0);
+    before = model.written;
+    CHECK(mt_change_frequency(&dev, MT_RF_MAX_HZ + 1) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(model.written == before);
+    put(&model, 16, 0xd74, 0xfffff400);
+    CHECK(mt_set_frequency(&dev, MT_RF_MIN_HZ) == BIRRIASDR_ERROR_STATE);
+    put(&model, 16, 0xd74, 0x00000400);
+    CHECK(mt_set_frequency(&dev, MT_RF_MAX_HZ) == BIRRIASDR_ERROR_STATE);
+}
+
+/* Exercise both low fractional bits through normal startup and the live public
+ * setter. A failed update must restore the previous fine word and API metadata,
+ * not round the rollback to the old 18-bit grid. No physical resolution is tested.
+ */
+static void test_fine_tuning(void)
+{
+    struct model model;
+    birriasdr_dev_t dev;
+    initialize(&model, &dev);
+    dev.backend = &bs_mt7921_backend;
+    atomic_init(&dev.run_state, BS_IDLE);
+    CHECK(pthread_mutex_init(&dev.control_mutex, NULL) == 0);
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(2400000029)) == 0);
+    CHECK(mt_configure_rf(&dev) == 0);
+    CHECK(get(&model, 16, 0xca8) == 0x05000001);
+    atomic_store(&dev.run_state, BS_RUNNING);
+    dev.control_ready = true;
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(2400000057)) == 0);
+    CHECK(get(&model, 16, 0xca8) == 0x05000002);
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(2400000086)) == 0);
+    CHECK(get(&model, 16, 0xca8) == 0x05000003);
+    model.fail_address = 0xce0;
+    CHECK(birriasdr_set_center_freq(&dev, MT_RF_ANCHOR_HZ) == BIRRIASDR_ERROR_IO);
+    CHECK(get(&model, 16, 0xca8) == 0x05000003);
+    CHECK(birriasdr_get_center_freq(&dev) == UINT64_C(2400000086));
+    CHECK(atomic_load(&dev.run_state) == BS_CONTROL_FAILED);
+    CHECK(dev.control_error == BIRRIASDR_ERROR_IO);
+    CHECK(pthread_mutex_destroy(&dev.control_mutex) == 0);
+}
+
 /* Entire RF regression suite is read/write-model based and never opens USB. */
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
     test_trace(argv[1]);
     test_failures();
+    test_gain_updates();
+    test_retune();
+    test_public_tuning();
+    test_fine_tuning();
     return 0;
 }

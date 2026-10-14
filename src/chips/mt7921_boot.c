@@ -11,8 +11,8 @@
  * I/Q producer. The caller already owns the USB interface and device lock.
  * mt_prepare() performs the following sequence, with ICAP stopped throughout:
  *
- *   restore gain -> WFSYS reset -> ROM USB/DMA setup -> patch-state check
- *   -> original program download -> ICAP setup -> RF setup -> gain setup
+ *   restore gain -> WFSYS reset -> ROM USB/DMA -> stale input drain -> patch check
+ *   -> original program download -> ICAP setup -> RF setup -> gain -> matched filter
  *
  * Reset is not equivalent to removing power. Analog gain overrides can survive
  * WFSYS reset, so mt_reset() restores our saved fields before resetting. A
@@ -77,14 +77,16 @@ static int reset_hardware(birriasdr_dev_t *dev)
     return bs_poll32(dev, BS_UHW, 0x74000a20, 1u << 22, 1u << 22, 200);
 }
 
-/* Gain fields can survive WFSYS reset. Restore our saved overrides first, but
- * still attempt reset if restoration fails. Report either failure to the caller.
+/* Analog gain and bandwidth fields can survive WFSYS reset. Restore both saved
+ * baselines first, but attempt every cleanup even when an earlier one fails.
  */
 int mt_reset(birriasdr_dev_t *dev)
 {
     int restore = mt_restore_gain(dev);
+    int filter = mt_restore_filter(dev);
     int reset = reset_hardware(dev);
-    return restore < 0 ? restore : reset;
+    if (restore < 0) return restore;
+    return filter < 0 ? filter : reset;
 }
 
 /* Prepare host-side WFDMA descriptor prefetch and scheduler quotas. "TX" here
@@ -256,7 +258,7 @@ static int download_original_program(birriasdr_dev_t *dev)
  * at its GO gate throughout host configuration. USB aggregation combines several
  * framed DMA packets per transfer; it does not change sample packing or rate.
  */
-int mt_prepare(birriasdr_dev_t *dev, uint32_t packets)
+static int prepare_once(birriasdr_dev_t *dev, uint32_t packets)
 {
     uint8_t power[4] = {1, 0, 0, 0};
     dev->touched = true;
@@ -268,6 +270,7 @@ int mt_prepare(birriasdr_dev_t *dev, uint32_t packets)
     BS_TRY(configure_dma(dev));
     BS_TRY(bs_write32(dev, BS_MMIO, 0x0041f23c, 0));
     BS_TRY(bs_update32(dev, BS_MMIO, 0x74000008, 0, 8));
+    BS_TRY(bs_usb_prepare_endpoints(dev));
     BS_TRY(rom_command(dev, 4, power, sizeof(power), NULL));
     BS_TRY(bs_poll32(dev, BS_MMIO, 0x7c0600f0, 7, 1, 1000));
     BS_TRY(require_unpatched_rom(dev));
@@ -281,5 +284,39 @@ int mt_prepare(birriasdr_dev_t *dev, uint32_t packets)
     dev->stats.stage = BIRRIASDR_STAGE_GAIN;
     BS_TRY(mt_apply_gain(dev));
     BS_TRY(bs_update32(dev, BS_MMIO, 0x74000018, 0xffff, (1u << 21) | (32u << 8) | 100));
-    return bs_update32(dev, BS_MMIO, 0x7400000c, 0xff, 30);
+    BS_TRY(bs_update32(dev, BS_MMIO, 0x7400000c, 0xff, 30));
+    dev->stats.stage = BIRRIASDR_STAGE_RF;
+    return mt_configure_filter(dev);
+}
+
+/* Retry a transient startup failure once, from a complete USB/WFSYS reset.
+ * No asynchronous reads have been submitted and GO has not been released yet,
+ * so restarting this entire volatile sequence cannot splice sample timelines.
+ * Never retry an individual ROM command: a failed transfer may have partially
+ * executed. A new attempt checks patch state and boots with a fresh nonce.
+ *
+ * Failed streams request the stronger transport reset on the next prepare.
+ * A lost/changed USB handle, retained vendor patch, calibration rejection or
+ * unsupported hardware is reported directly. This does not replace cold power
+ * removal when a stock ROM patch was loaded before our library acquired USB.
+ */
+int mt_prepare(birriasdr_dev_t *dev, uint32_t packets)
+{
+    int result = 0;
+    if (dev->usb_lost)
+        return BIRRIASDR_ERROR_NO_DEVICE;
+    for (unsigned attempt = 0; attempt < 2; ++attempt) {
+        if (dev->needs_usb_reset) {
+            dev->stats.stage = BIRRIASDR_STAGE_RESET;
+            BS_TRY(bs_usb_recover(dev));
+            dev->needs_usb_reset = false;
+        }
+        result = prepare_once(dev, packets);
+        if (!result || (result != BIRRIASDR_ERROR_IO && result != BIRRIASDR_ERROR_TIMEOUT))
+            return result;
+        dev->needs_usb_reset = true;
+        if (atomic_load(&dev->run_state) == BS_CANCELLING)
+            break;
+    }
+    return result;
 }

@@ -33,7 +33,7 @@ SOFTWARE.
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Luigi C. See LICENSE.
  * Original continuous ICAP SRAM -> serial USB DMA diagnostic.
- * No downloaded MediaTek firmware; ROM PHY power-on only.
+ * No downloaded vendor firmware; ROM PHY power-on only.
  * Extra mailbox words: 16 produced units, 17 final ICAP control,
  * 18 final producer, 19 power-on return, 20 maximum backlog (units),
  * 21 maximum producer poll interval (microseconds).

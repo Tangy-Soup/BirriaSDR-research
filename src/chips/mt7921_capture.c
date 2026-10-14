@@ -12,7 +12,8 @@
  * This module selects the capture tap and clocks; mt7921_rf.c makes that tap
  * receive an external signal. Tap 4 is selected in 0x830ad448[11:8] and uses
  * logical chain 0 (physical RF SPI 1). This is not an antenna-switch control.
- * The backend currently qualifies channel 6 at 40 MSps complex only.
+ * The backend uses the channel-6 anchor at 40 MSps complex and exposes an
+ * low-band retuning interval without changing the capture clocks.
  *
  * ICAP control is 0x80021090, its start/end offsets are 0x80021098/0x8002109c,
  * and its producer pointer is 0x800210b4. The 256 KiB ring at byte address
@@ -115,7 +116,7 @@ static int validate(uint64_t frequency, uint32_t rate, const struct birriasdr_ga
 {
     if (gain->lna > 3 || gain->lpf > 8 || gain->digital > 12)
         return BIRRIASDR_ERROR_INVALID;
-    if (frequency != UINT64_C(2437000000) || rate != 40000000)
+    if (frequency < MT_RF_MIN_HZ || frequency > MT_RF_MAX_HZ || rate != 40000000)
         return BIRRIASDR_ERROR_UNSUPPORTED;
     return 0;
 }
@@ -133,11 +134,14 @@ static int identify(birriasdr_dev_t *dev)
 const struct bs_backend bs_mt7921_backend = {
     .chipset = BIRRIASDR_CHIP_MT7921,
     .name = "MT7961/MT7972",
-    .capabilities = BIRRIASDR_CAP_RX | BIRRIASDR_CAP_RAW_GAIN,
-    .default_frequency = UINT64_C(2437000000),
+    .capabilities = BIRRIASDR_CAP_RX | BIRRIASDR_CAP_RAW_GAIN | BIRRIASDR_CAP_LIVE_GAIN |
+                    BIRRIASDR_CAP_TUNING | BIRRIASDR_CAP_LIVE_TUNING,
+    .default_frequency = MT_RF_ANCHOR_HZ,
+    .min_frequency = MT_RF_MIN_HZ, .max_frequency = MT_RF_MAX_HZ,
     .default_rate = 40000000,
     .validate = validate,
     .identify = identify,
     .prepare = mt_prepare, .start = mt_start, .stop = mt_stop,
-    .status = mt_status, .reset = mt_reset
+    .status = mt_status, .reset = mt_reset, .change_gain = mt_change_gain,
+    .change_frequency = mt_change_frequency
 };

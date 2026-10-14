@@ -22,7 +22,7 @@
  * These are raw indices, not dB. LPF gain changes the filter-stage gain, not
  * its bandwidth; writing a wider numeric code is not a wider RF passband.
  *
- * Apply this recipe after RF initialization, before capture starts. Snapshot
+ * Initialize this recipe after RF initialization, before capture starts. Snapshot
  * the baseline and reject pre-existing forces, including coarse force
  * 0x830000d0[27], rather than saving a forced state as an automatic baseline.
  * Clamp the analog path first, then program digital and PHY overrides, checking
@@ -37,8 +37,10 @@
  * Automatic/released mode means leaving the initialized baseline unforced.
  * It does not prove full AGC operation or that manual mode freezes every gain
  * loop. Calibrated dB, AGC target, attack/decay and complete AGC disable remain
- * unsupported. Live gain changes would also need serialized hardware ownership
- * and a defined sample boundary; the current API stages changes between reads.
+ * unsupported. The private update helper can reuse the saved baseline while
+ * capturing, provided the reader owns all RF/register access. The four writes
+ * are not simultaneous and buffered samples precede their acknowledgment;
+ * callers must not present a host callback offset as an exact RF boundary.
  * See docs/mt7921.md for the scope of these controls.
  */
 #include "mt7921.h"
@@ -74,35 +76,19 @@ static int gain_write(birriasdr_dev_t *dev, unsigned field, uint32_t value)
     return ((actual ^ value) & mask) ? BIRRIASDR_ERROR_STATE : 0;
 }
 
-/* Each read boots into an unforced baseline. Manual mode clamps analog gain
- * first, then digital and PHY A/B/C/D indices. Release mode retains the fresh
- * baseline. This is not a software AGC implementation or a calibrated dB API.
- * Failed changes roll back, and the outer read always resets the whole device.
+/* Apply one four-field transaction, preserving unrelated fields. A failed
+ * update restores the immediately preceding settings, not the boot baseline.
+ * The baseline remains saved separately for release and final reset cleanup.
  */
-int mt_apply_gain(birriasdr_dev_t *dev)
+static int gain_transaction(birriasdr_dev_t *dev, const uint32_t before[4],
+                            const uint32_t values[4], bool manual)
 {
     static const unsigned order[] = {3, 1, 2, 0};
     static const unsigned restore[] = {1, 2, 0, 3};
-    uint32_t before[4], coarse, values[4];
-    uint32_t lna = dev->gain.lna, lpf = dev->gain.lpf, digital = dev->gain.digital;
+    const unsigned *sequence = manual ? order : restore;
     int result = 0;
-    if (lna > 3 || lpf > 8 || digital > 12)
-        return BIRRIASDR_ERROR_INVALID;
-    BS_TRY(gain_snapshot(dev, before));
-    BS_TRY(bs_read32(dev, BS_MMIO, 0x830000d0, &coarse));
-    if ((before[0] & 7) || (before[2] & 0x80000000) ||
-        (before[3] & 0x80000000) || (coarse & (1u << 27)))
-        return BIRRIASDR_ERROR_STATE;
-    if (!dev->manual)
-        return 0;
-    memcpy(dev->mt7921.gain_baseline, before, sizeof(before));
-    dev->mt7921.gain_saved = true;
-    values[0] = 7 | lna << 8 | lpf << 12 | lna << 16 | lpf << 20 | lna << 24 | lpf << 28;
-    values[1] = digital << 24 | digital << 16;
-    values[2] = 0x80000000u | lna << 20;
-    values[3] = 0x80000000u | lna << 27 | lpf << 23;
     for (unsigned i = 0; i < 4; ++i) {
-        result = gain_write(dev, order[i], values[order[i]]);
+        result = gain_write(dev, sequence[i], values[sequence[i]]);
         if (result < 0)
             break;
     }
@@ -115,6 +101,57 @@ int mt_apply_gain(birriasdr_dev_t *dev)
             return BIRRIASDR_ERROR_STATE;
     }
     return result;
+}
+
+/* Build raw forced indices; these masks never imply calibrated gain in dB. */
+static int gain_values(const struct birriasdr_gain *gain, uint32_t values[4])
+{
+    uint32_t lna = gain->lna, lpf = gain->lpf, digital = gain->digital;
+    if (lna > 3 || lpf > 8 || digital > 12)
+        return BIRRIASDR_ERROR_INVALID;
+    values[0] = 7 | lna << 8 | lpf << 12 | lna << 16 | lpf << 20 | lna << 24 | lpf << 28;
+    values[1] = digital << 24 | digital << 16;
+    values[2] = 0x80000000u | lna << 20;
+    values[3] = 0x80000000u | lna << 27 | lpf << 23;
+    return 0;
+}
+
+/* Each read boots into an unforced baseline. Save it even in released mode so
+ * a later manual update cannot mistake its own force bits for the baseline.
+ * Only the capture owner may call this initialization, before releasing GO.
+ */
+int mt_apply_gain(birriasdr_dev_t *dev)
+{
+    uint32_t before[4], coarse, values[4];
+    BS_TRY(gain_values(&dev->gain, values));
+    BS_TRY(gain_snapshot(dev, before));
+    BS_TRY(bs_read32(dev, BS_MMIO, 0x830000d0, &coarse));
+    if ((before[0] & 7) || (before[2] & 0x80000000) ||
+        (before[3] & 0x80000000) || (coarse & (1u << 27)))
+        return BIRRIASDR_ERROR_STATE;
+    memcpy(dev->mt7921.gain_baseline, before, sizeof(before));
+    dev->mt7921.gain_saved = true;
+    return dev->manual ? gain_transaction(dev, before, values, true) : 0;
+}
+
+/* Change gain on an initialized receiver without stopping ICAP or rebooting.
+ * The caller must serialize the complete operation with other register access.
+ * No firmware command is needed: the streaming MCU never touches these fields.
+ * Readback confirms register application, not analog settling or a sample index.
+ * Leave requested API settings to the caller, which commits only on success.
+ */
+int mt_change_gain(birriasdr_dev_t *dev, bool manual, const struct birriasdr_gain *gain)
+{
+    uint32_t before[4], values[4];
+    if (!gain)
+        return BIRRIASDR_ERROR_INVALID;
+    BS_TRY(gain_values(gain, values));
+    if (!dev->mt7921.gain_saved)
+        return BIRRIASDR_ERROR_STATE;
+    if (!manual)
+        memcpy(values, dev->mt7921.gain_baseline, sizeof(values));
+    BS_TRY(gain_snapshot(dev, before));
+    return gain_transaction(dev, before, values, manual);
 }
 
 /* WFSYS reset does not reliably erase analog gain overrides. Restore this

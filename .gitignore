@@ -5,8 +5,12 @@ cmake-build-*/
 CMakeUserPresets.json
 compile_commands.json
 
+# Local research notes, probes and build helpers.
+/research/
+
 # Captures written by birria_rx
 *.cs16
+*.qi14
 
 # Python
 __pycache__/
@@ -14,6 +18,7 @@ __pycache__/
 .venv/
 
 # Editors and OS files
+.claude/
 .DS_Store
 .vscode/
 .idea/

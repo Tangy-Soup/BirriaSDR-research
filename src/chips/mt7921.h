@@ -13,7 +13,7 @@
  *
  * The caller owns the USB interface. Prepare configures hardware while the MCU
  * waits for GO; start follows queued USB reads; stop requests DMA drain. Reset
- * restores saved analog gain before resetting WFSYS. RF/gain access must not
+ * restores saved gain and filter fields before resetting WFSYS. RF access must not
  * race an active RF controller. These helpers are private so the public API
  * can enforce that lifecycle rather than expose uncoordinated register writes.
  * File-level comments in each implementation explain the hardware mechanisms
@@ -30,13 +30,39 @@
 #define MT_TOP_PORT 5u
 #define MT_RX_PORT 1u
 #define MT_SYNTH_PORT 0u
+#define MT_RF_ANCHOR_HZ UINT64_C(2437000000)
+/* Command limits inside the observed calibration transitions, not a
+ * calibrated passband or a guarantee of sensitivity at every frequency.
+ */
+#define MT_RF_MIN_HZ UINT64_C(2156000000)
+#define MT_RF_MAX_HZ UINT64_C(2610000000)
+#define MT_RF_FRACTION_BITS 20u
+
+/* A mathematical frequency plan, not a claim of analog tuning coverage.
+ * nominal_hz_num / nominal_hz_den is exact for the assumed 60 MHz reference.
+ */
+struct mt_2g_tuning {
+    uint32_t word, calibration_cycles;
+    uint64_t nominal_hz_num;
+    uint32_t nominal_hz_den;
+};
+
+int mt_plan_2g(uint64_t frequency_hz, unsigned fraction_bits, struct mt_2g_tuning *plan);
+int mt_tune_2g(birriasdr_dev_t *dev, unsigned port, bool secondary,
+               uint64_t frequency_hz, unsigned fraction_bits);
+int mt_retune_2g_probe(birriasdr_dev_t *dev, uint64_t frequency_hz, unsigned fraction_bits);
+int mt_set_frequency(birriasdr_dev_t *dev, uint64_t frequency_hz);
+int mt_change_frequency(birriasdr_dev_t *dev, uint64_t frequency_hz);
 
 int mt_rf_read(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t *value);
 int mt_rf_write(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t value);
 int mt_rf_update(birriasdr_dev_t *dev, unsigned port, uint32_t address,
                  uint32_t clear, uint32_t set);
 int mt_configure_rf(birriasdr_dev_t *dev);
+int mt_configure_filter(birriasdr_dev_t *dev);
+int mt_restore_filter(birriasdr_dev_t *dev);
 int mt_apply_gain(birriasdr_dev_t *dev);
+int mt_change_gain(birriasdr_dev_t *dev, bool manual, const struct birriasdr_gain *gain);
 int mt_restore_gain(birriasdr_dev_t *dev);
 int mt_configure_capture(birriasdr_dev_t *dev);
 int mt_reset(birriasdr_dev_t *dev);

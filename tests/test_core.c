@@ -79,6 +79,51 @@ static void test_samples(void)
     CHECK(bs_decode_iq(raw, iq, 2) == BIRRIASDR_ERROR_PROTOCOL);
 }
 
+/* A start acknowledgment may arrive fragmented beside sample events. Reject
+ * duplicate/nonzero ACKs and carry packet sequence through its wire rollover.
+ */
+static void test_events(void)
+{
+    uint8_t ack[40] = {0}, frame[BS_FRAME_BYTES];
+    unsigned count = 0;
+    struct bs_framer framer = {.nonce = 0x12345678, .payload = payload, .context = &count};
+    bs_put_le32(ack, 0x38000024);
+    ack[28] = 1;
+    CHECK(bs_framer_feed(&framer, ack, 17) == 0);
+    CHECK(bs_framer_feed(&framer, ack + 17, 23) == 0);
+    make_frame(frame, 0);
+    CHECK(bs_framer_feed(&framer, frame, sizeof(frame)) == 0);
+    CHECK(framer.acknowledgements == 1 && count == 1);
+    CHECK(bs_framer_feed(&framer, ack, sizeof(ack)) == BIRRIASDR_ERROR_PROTOCOL);
+    framer = (struct bs_framer){.nonce = 0x12345678, .payload = payload, .context = &count};
+    ack[32] = 1;
+    CHECK(bs_framer_feed(&framer, ack, sizeof(ack)) == BIRRIASDR_ERROR_PROTOCOL);
+    framer = (struct bs_framer){.nonce = 0x12345678, .payload = payload, .context = &count,
+                              .packets = UINT32_MAX};
+    make_frame(frame, UINT32_MAX);
+    CHECK(bs_framer_feed(&framer, frame, sizeof(frame)) == 0);
+    make_frame(frame, 0);
+    CHECK(bs_framer_feed(&framer, frame, sizeof(frame)) == 0);
+    CHECK(bs_framer_finish(&framer, UINT64_C(4294967297)) == 0);
+}
+
+/* Every signed 14-bit component must survive decode, including both extrema.
+ * Complement Q so reversing the two components cannot accidentally pass.
+ */
+static void test_all_sample_values(void)
+{
+    uint8_t raw[4];
+    int16_t iq[2];
+    for (uint32_t value = 0; value < 16384; ++value) {
+        uint32_t q = 16383 - value;
+        int expected_i = value < 8192 ? (int)value : (int)value - 16384;
+        int expected_q = q < 8192 ? (int)q : (int)q - 16384;
+        bs_put_le32(raw, value << 16 | q);
+        CHECK(bs_decode_iq(raw, iq, 1) == 0);
+        CHECK(iq[0] == expected_i && iq[1] == expected_q);
+    }
+}
+
 /* Verify the embedded original image's PDA trailer, independently of USB ROM. */
 static void test_image(void)
 {
@@ -98,7 +143,9 @@ static void test_api(void)
     birriasdr_dev_t dev = {0};
     const struct bs_usb_id *id = bs_lookup_id(0x0e8d, 0x7925);
     struct birriasdr_gain gain = {2, 8, 0};
+    uint64_t minimum, maximum;
     atomic_init(&dev.run_state, BS_IDLE);
+    CHECK(pthread_mutex_init(&dev.control_mutex, NULL) == 0);
     dev.backend = &bs_mt7921_backend;
     dev.frequency = dev.backend->default_frequency;
     dev.rate = dev.backend->default_rate;
@@ -108,6 +155,19 @@ static void test_api(void)
     CHECK(birriasdr_set_agc_mode(&dev, 1) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_set_tuner_bandwidth(&dev, 40000000) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_set_center_freq(&dev, UINT64_C(5180000000)) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_get_tuning_range(&dev, &minimum, &maximum) == 0);
+    CHECK(birriasdr_get_capabilities(&dev) & BIRRIASDR_CAP_TUNING);
+    CHECK(minimum == UINT64_C(2156000000) && maximum == UINT64_C(2610000000));
+    CHECK(birriasdr_set_center_freq(&dev, minimum) == 0);
+    CHECK(birriasdr_set_center_freq(&dev, maximum) == 0);
+    CHECK(birriasdr_set_center_freq(&dev, minimum - 1) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_set_center_freq(&dev, maximum + 1) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_get_center_freq(&dev) == maximum);
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(2437123456)) == 0);
+    CHECK(birriasdr_get_center_freq(&dev) == UINT64_C(2437123456));
+    CHECK(birriasdr_set_sample_rate(&dev, 0) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_set_sample_rate(&dev, 80000000) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_get_sample_rate(&dev) == 40000000);
     CHECK(birriasdr_set_gain_codes(&dev, &gain) == BIRRIASDR_ERROR_STATE);
     CHECK(birriasdr_set_tuner_gain_mode(&dev, 1) == 0);
     CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
@@ -120,7 +180,9 @@ static void test_api(void)
     CHECK(atomic_load(&dev.run_state) == BS_CANCELLING);
     CHECK(birriasdr_cancel_async(&dev) == 0);
     CHECK(birriasdr_set_tuner_gain_mode(&dev, 0) == BIRRIASDR_ERROR_BUSY);
+    CHECK(birriasdr_set_center_freq(&dev, minimum) == BIRRIASDR_ERROR_BUSY);
     CHECK(birriasdr_close(&dev) == BIRRIASDR_ERROR_BUSY);
+    CHECK(pthread_mutex_destroy(&dev.control_mutex) == 0);
 }
 
 /* Tests deliberately run without a dongle, root privileges or vendor firmware. */
@@ -128,6 +190,8 @@ int main(void)
 {
     test_framing();
     test_samples();
+    test_events();
+    test_all_sample_values();
     test_image();
     test_api();
     puts("core tests passed");

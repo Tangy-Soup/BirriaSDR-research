@@ -15,8 +15,8 @@
 /* Enumerate known identities without assuming identical RF wiring across boards. */
 static const struct bs_usb_id devices[] = {
     {0x3574, 0x6211, "COMFAST MT7961 / MT7972", &bs_mt7921_backend, true},
-    {0x0e8d, 0x7961, "MediaTek MT7921 USB (board not qualified)", &bs_mt7921_backend, false},
-    {0x0e8d, 0x7925, "MediaTek MT7925 USB (not implemented)", &bs_mt7925_backend, false},
+    {0x0e8d, 0x7961, "MT7921 USB (board not qualified)", &bs_mt7921_backend, false},
+    {0x0e8d, 0x7925, "MT7925 USB (not implemented)", &bs_mt7925_backend, false},
     {0x0846, 0x9050, "Netgear A8500 MT7925 (not implemented)", &bs_mt7925_backend, false},
     {0x0846, 0x9072, "Netgear A9000 MT7925 (not implemented)", &bs_mt7925_backend, false}
 };
@@ -96,6 +96,54 @@ int bs_bulk_out(birriasdr_dev_t *dev, uint8_t ep, const uint8_t *data, int lengt
     if (result < 0)
         return bs_usb_error(result);
     return actual == length ? 0 : BIRRIASDR_ERROR_IO;
+}
+
+/* Old aggregated I/Q can be larger than a ROM reply buffer. Drain with full
+ * 64 KiB reads before sending any new command, so a stale event cannot overflow
+ * the first semaphore reply or collide with a reused command sequence number.
+ * A timeout carrying partial data is NOT an empty pipe. Bound both elapsed
+ * time and transfer count, and never discard data once the new capture begins.
+ * The caller has reaped asynchronous transfers and initialized ROM USB/DMA.
+ */
+int bs_usb_prepare_endpoints(birriasdr_dev_t *dev)
+{
+    uint8_t bytes[65536];
+    uint64_t deadline;
+    deadline = bs_now_ns() + UINT64_C(250000000);
+    for (unsigned i = 0; i < 64 && bs_now_ns() < deadline; ++i) {
+        int actual = 0;
+        int result = libusb_bulk_transfer(dev->handle, dev->ep_in, bytes,
+                                          sizeof(bytes), &actual, 10);
+        if (result == LIBUSB_ERROR_TIMEOUT && actual == 0)
+            return 0;
+        if (result != LIBUSB_ERROR_TIMEOUT && result != LIBUSB_ERROR_OVERFLOW)
+            BS_TRY(bs_usb_error(result));
+    }
+    return BIRRIASDR_ERROR_TIMEOUT;
+}
+
+/* Repair transport after failed acquisition or boot. A WFSYS register reset
+ * does not necessarily repair the host/device USB protocol state. In testing,
+ * a persistent bulk EPROTO survived WFSYS resets and close/reopen; this USB reset
+ * restored it. Do not proactively clear halts on healthy pipes: doing so caused
+ * that failure on the tested MT7961. No transfer may remain submitted here.
+ *
+ * Keep the same claimed handle and advisory lock. libusb restores configuration
+ * on success. NOT_FOUND means re-enumeration invalidated the handle: stop and
+ * report device loss, rather than guess an enumeration index or touch another
+ * dongle. This resets USB, not hub power, and does not download a vendor image.
+ */
+int bs_usb_recover(birriasdr_dev_t *dev)
+{
+    if (dev->usb_lost)
+        return BIRRIASDR_ERROR_NO_DEVICE;
+    int result = libusb_reset_device(dev->handle);
+    if (result == LIBUSB_ERROR_NOT_FOUND || result == LIBUSB_ERROR_NO_DEVICE) {
+        dev->usb_lost = true;
+        dev->touched = false;
+        return BIRRIASDR_ERROR_NO_DEVICE;
+    }
+    return bs_usb_error(result);
 }
 
 /* Share the existing prototype's lock for the tested dongle. Additional devices
@@ -249,7 +297,7 @@ int bs_usb_discover(uint32_t index, struct birriasdr_device_info *info, birriasd
 void bs_usb_close(birriasdr_dev_t *dev)
 {
     if (dev->handle) {
-        if (dev->interface_number >= 0)
+        if (dev->interface_number >= 0 && !dev->usb_lost)
             libusb_release_interface(dev->handle, dev->interface_number);
         libusb_close(dev->handle);
     }

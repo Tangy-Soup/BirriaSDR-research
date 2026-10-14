@@ -14,6 +14,6 @@ checked against this device's ROM and hardware. That chipset's calibration
 tables are not included: https://github.com/h0m3us3r/w1700k-sdr/tree/7f151711eede9bdc0e17763c54bd6f2dc1d10662
 
 libusb is a separate dependency under LGPL-2.1-or-later. The library does not
-embed libusb, NumPy, Python, a MediaTek ROM dump, or vendor RAM/patch firmware.
+embed libusb, NumPy, Python, a vendor ROM dump, or vendor RAM/patch firmware.
 The original device program calls immutable factory-ROM routines already present
 in the chip. No nonvolatile programming is implemented.

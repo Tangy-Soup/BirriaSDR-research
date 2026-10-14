@@ -9,7 +9,7 @@
 
 struct observation { birriasdr_dev_t *dev; uint64_t samples; int error; };
 
-/* Exercise callback ordering, safe cancellation and rejection of live setters.
+/* Exercise callback ordering, safe cancellation and a live gain-mode change.
  * Do no file I/O during streaming, so this tests the C library delivery path.
  */
 static void observe(const int16_t *iq, uint32_t count, uint64_t first, void *context)
@@ -17,7 +17,7 @@ static void observe(const int16_t *iq, uint32_t count, uint64_t first, void *con
     struct observation *observation = context;
     if (first != observation->samples || iq[0] < -8192 || iq[0] > 8191)
         observation->error = 1;
-    if (!first && birriasdr_set_tuner_gain_mode(observation->dev, 0) != BIRRIASDR_ERROR_BUSY)
+    if (!first && birriasdr_set_tuner_gain_mode(observation->dev, 0) != 0)
         observation->error = 1;
     observation->samples += count;
     if (observation->samples >= 40000000 || observation->error)

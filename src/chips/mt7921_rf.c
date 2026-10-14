@@ -13,6 +13,8 @@
  * profile is the COMFAST board with analog ID 0x79728a10, a 40 MHz crystal and
  * channel 6 (2437 MHz). The synthesizer reference is 60 MHz; it is distinct
  * from both the crystal frequency and the 40 MSps complex capture rate.
+ * Requested centers first establish that anchor, then retune only the
+ * selected secondary oscillator through mt7921_tune.c with 20 fractional bits.
  *
  * Analog registers sit behind the RF SPI bridge at 0x7c004000, accessed using
  * BS_BRIDGE USB requests. Wi-Fi ports share command/data/result offsets
@@ -32,8 +34,10 @@
  *     Clear it, wait and check readback before tuning. Leaving it set was the
  *     cause of missing channel-6 signals despite a working sample transport.
  *   - Bias and prepare both synthesizer banks. The 2.4 GHz LO uses a VCO at
- *     twice the receive frequency. Its rounded 18-bit fraction is stored
+ *     twice the receive frequency. Bootstrap tuning retains its 18-bit fraction
  *     shifted left by two, with a self-clearing LOAD bit in 0xc68 or 0xca8.
+ *     The final selected oscillator uses the full 20-bit fraction; the channel-6
+ *     word is identical at either precision, preserving the bootstrap trace.
  *   - Run VCO calibration, poll 0xd7c[21], and latch 0xd78[2:0] into
  *     0xc0c[24:22]. DONE alone proves neither PLL lock nor tuning accuracy.
  *     Stop the calibration machinery on both success and failure.
@@ -44,9 +48,10 @@
  * The ordered tables contain decoded setup constants, not per-unit calibration
  * dumps. Several bias fields remain unidentified. Do not sort or deduplicate
  * writes: intermediate settings, action strobes and settling waits matter.
- * RF 0x160[31:30]=0 retains the existing 20 MHz filter profile; 40 MSps capture
- * does not establish a flat 40 MHz passband. Wider filters, other bands and
- * full calibration need RF measurements before expanding the backend limits.
+ * RF 0x160[31:30]=0 retains the established bootstrap profile during bring-up.
+ * mt7921_filter.c then applies the matched analog/digital 40 MHz profile before
+ * capture. Keep bootstrap ordering separate from the final bandwidth setting;
+ * calibrated passband, other bands and full calibration remain unqualified.
  * See docs/mt7921.md for an overview and tests/python-channel6.trace for writes.
  */
 #include "mt7921.h"
@@ -56,7 +61,8 @@ struct rf_word { uint32_t address, value; };
 /* The RF SPI bridge is a command/data/result triplet. Writing DATA launches
  * the transfer; a busy bit protects both preceding and following accesses.
  * Wi-Fi ports share triplet +0x10/busy bit 1; TOP uses +0x50/busy bit 5.
- * The MCU must be parked so it cannot race the host on this same bridge.
+ * The MCU must not use this bridge concurrently. Our streaming program leaves
+ * it alone after GO; the control mutex serializes all host register procedures.
  */
 static int rf_transfer(birriasdr_dev_t *dev, unsigned port, uint32_t address,
                        uint32_t *value, bool read)
@@ -139,80 +145,6 @@ static int configure_bias(birriasdr_dev_t *dev, unsigned port)
     };
     BS_TRY(rf_words(dev, port, synthesizer, sizeof(synthesizer) / sizeof(synthesizer[0])));
     return rf_words(dev, port, receiver, sizeof(receiver) / sizeof(receiver[0]));
-}
-
-/* Stop only the synthesizer calibration machine, attempting every cleanup write
- * even after an I/O failure. No transmit/loopback calibration is invoked.
- */
-static int finish_calibration(birriasdr_dev_t *dev, unsigned port)
-{
-    int results[4];
-    results[0] = mt_rf_update(dev, port, 0xcc4, (1u << 29) | (1u << 30), 0);
-    results[1] = mt_rf_update(dev, port, 0xcc8, 1, 0);
-    results[2] = mt_rf_update(dev, port, 0xd20, 0, 4);
-    results[3] = mt_rf_write(dev, port, 0xce0, 0);
-    for (size_t i = 0; i < 4; ++i)
-        if (results[i] < 0)
-            return results[i];
-    return 0;
-}
-
-/* Start VCO calibration, wait for DONE, and latch its result into the live
- * range field. DONE is not a qualified PLL-lock indicator on this die.
- */
-static int run_calibration(birriasdr_dev_t *dev, unsigned port)
-{
-    uint32_t value;
-    uint64_t deadline;
-    BS_TRY(mt_rf_update(dev, port, 0xd20, 4, 0));
-    BS_TRY(mt_rf_update(dev, port, 0xcc4, 0, 1u << 30));
-    BS_TRY(mt_rf_write(dev, port, 0xce0, 0x42956473));
-    BS_TRY(mt_rf_update(dev, port, 0xcc8, 0, 1));
-    BS_TRY(mt_rf_update(dev, port, 0xcc4, 0, 1u << 29));
-    deadline = bs_now_ns() + 100000000;
-    for (;;) {
-        BS_TRY(mt_rf_read(dev, port, 0xd7c, &value));
-        if (value & (1u << 21))
-            break;
-        if (bs_now_ns() >= deadline)
-            return BIRRIASDR_ERROR_TIMEOUT;
-        bs_sleep_us(100);
-    }
-    BS_TRY(mt_rf_update(dev, port, 0xcc4, 1u << 29, 0));
-    BS_TRY(mt_rf_update(dev, port, 0xcc4, 1u << 30, 0));
-    BS_TRY(mt_rf_read(dev, port, 0xd78, &value));
-    return mt_rf_update(dev, port, 0xc0c, 7u << 22, (value & 7) << 22);
-}
-
-/* A ~4.8 GHz VCO is divided by two for 2.4 GHz reception. Calculate the 18-bit
- * fraction against the 60 MHz reference, store it left-shifted by two, and set
- * LOAD (bit 31, self-clearing). Preserve the prototype's staged primary/secondary
- * tuning order until experiments justify simplifying it.
- */
-static int tune(birriasdr_dev_t *dev, unsigned port, bool secondary)
-{
-    uint32_t vco_khz = (uint32_t)(dev->frequency / 500);
-    uint32_t integer = vco_khz / 60000;
-    uint32_t fraction = (uint32_t)((((uint64_t)(vco_khz % 60000) << 18) + 30000) / 60000);
-    uint32_t word = 0x80000000u | integer << 20 | fraction << 2;
-    uint32_t reg = secondary ? 0xca8 : 0xc68;
-    uint32_t selector = secondary ? 3 : 2;
-    uint32_t readback;
-    int result, cleanup;
-    BS_TRY(mt_rf_update(dev, port, 0x240, 0, 0xf0000000));
-    BS_TRY(mt_rf_update(dev, port, 0x204, 0x00c00000, selector << 22));
-    BS_TRY(mt_rf_update(dev, port, 0x21c, 0x00060000, selector << 17));
-    BS_TRY(mt_rf_update(dev, port, 0x160, 1u << 29, 0));
-    BS_TRY(mt_rf_write(dev, port, 0xcf8, 0x90));
-    BS_TRY(mt_rf_write(dev, port, reg, word));
-    BS_TRY(mt_rf_write(dev, port, reg + 4, vco_khz * 240u / 60000u - 2));
-    BS_TRY(mt_rf_update(dev, port, reg + 16, 0x000ffff0, 0x14 * 0x1010));
-    result = run_calibration(dev, port);
-    cleanup = finish_calibration(dev, port);
-    if (result < 0 || cleanup < 0)
-        return result < 0 ? result : cleanup;
-    BS_TRY(mt_rf_read(dev, port, reg, &readback));
-    return readback == (word & 0x7fffffff) ? 0 : BIRRIASDR_ERROR_STATE;
 }
 
 /* Program TOP's analog reference, hand the digital clock mux to it, then finish
@@ -301,7 +233,7 @@ static int initialize_chains(birriasdr_dev_t *dev)
         BS_TRY(mt_rf_update(dev, (unsigned)p, 0x204, 0xff000000, 0x82000000));
     }
     BS_TRY(mt_rf_write(dev, 1, 0x1e4, 0x3fbcb));
-    BS_TRY(tune(dev, 1, false));
+    BS_TRY(mt_tune_2g(dev, 1, false, MT_RF_ANCHOR_HZ, 18));
     BS_TRY(configure_bias(dev, 0));
     BS_TRY(bs_update32(dev, BS_MMIO, 0x83090004, 0, 0x3840));
     BS_TRY(bs_update32(dev, BS_MMIO, 0x83090008, 0, 0x3840));
@@ -313,14 +245,14 @@ static int initialize_chains(birriasdr_dev_t *dev)
         BS_TRY(mt_rf_write(dev, p, 0x638, 0x20410108));
         BS_TRY(mt_rf_write(dev, p, 0x63c, 0x08102081));
     }
-    BS_TRY(tune(dev, 0, false));
+    BS_TRY(mt_tune_2g(dev, 0, false, MT_RF_ANCHOR_HZ, 18));
     return bs_update32(dev, BS_MMIO, 0x830ad448, 0xf00, 0x400);
 }
 
 /* Final receive routing uses chain 0 (physical SPI 1), but its LO comes from
  * physical SPI 0's secondary synthesizer. Keep that idle bank's 1E4[7:6] set:
  * applying the active bank's value to both reproduced the weak-input fault.
- * RF 160[31:30]=0 keeps the existing 20 MHz filter profile at 40 MSps capture.
+ * RF 160[31:30]=0 preserves the bootstrap; mt_configure_filter() widens it later.
  */
 static int select_receive_path(birriasdr_dev_t *dev)
 {
@@ -332,7 +264,7 @@ static int select_receive_path(birriasdr_dev_t *dev)
         {0x73c, 0x00aac028}, {0x740, 0x02558000},
         {0x798, 0x00aac028}, {0x79c, 0x02558000}
     };
-    BS_TRY(tune(dev, 0, true));
+    BS_TRY(mt_tune_2g(dev, 0, true, MT_RF_ANCHOR_HZ, 18));
     for (unsigned p = 0; p < 2; ++p) {
         BS_TRY(mt_rf_update(dev, p, 0x204, 0x00c00000, 0x00c00000));
         BS_TRY(mt_rf_update(dev, p, 0x21c, 0x00060000, 0x00060000));
@@ -343,7 +275,7 @@ static int select_receive_path(birriasdr_dev_t *dev)
         BS_TRY(mt_rf_write(dev, p, 0x1e4, p == 1 ? 0x3fb0b : 0x23c1));
     }
     BS_TRY(rf_words(dev, 0, companion, sizeof(companion) / sizeof(companion[0])));
-    BS_TRY(tune(dev, 0, true));
+    BS_TRY(mt_tune_2g(dev, 0, true, MT_RF_ANCHOR_HZ, MT_RF_FRACTION_BITS));
     BS_TRY(mt_rf_update(dev, 0, 0x240, 0xf0000000, 0));
     for (unsigned p = 0; p < 2; ++p) {
         BS_TRY(mt_rf_update(dev, p, 0x204, 0x600, 0));
@@ -353,13 +285,15 @@ static int select_receive_path(birriasdr_dev_t *dev)
     return bs_update32(dev, BS_MMIO, 0x830ad448, 0xf00, 0x400);
 }
 
-/* Validate the die and crystal before analog writes. This entry is the complete
- * tested channel-6 profile, not a general 2.4/5 GHz initialization algorithm.
+/* Validate the die/crystal, initialize the established channel-6 clock/bias
+ * profile, then retune only the selected secondary oscillator when requested.
+ * Keeping the anchor sequence intact avoids guessing new companion-oscillator
+ * or filter settings. Normal tuning uses all 20 fractional bits.
  */
 int mt_configure_rf(birriasdr_dev_t *dev)
 {
     uint32_t analog, crystal;
-    if (dev->frequency != UINT64_C(2437000000) || dev->rate != 40000000)
+    if (dev->frequency < MT_RF_MIN_HZ || dev->frequency > MT_RF_MAX_HZ || dev->rate != 40000000)
         return BIRRIASDR_ERROR_UNSUPPORTED;
     BS_TRY(mt_rf_read(dev, MT_TOP_PORT, 0x2c, &analog));
     BS_TRY(bs_read32(dev, BS_MMIO, 0x02004600, &crystal));
@@ -367,5 +301,6 @@ int mt_configure_rf(birriasdr_dev_t *dev)
         return BIRRIASDR_ERROR_UNSUPPORTED;
     BS_TRY(configure_clocks(dev));
     BS_TRY(initialize_chains(dev));
-    return select_receive_path(dev);
+    BS_TRY(select_receive_path(dev));
+    return dev->frequency == MT_RF_ANCHOR_HZ ? 0 : mt_set_frequency(dev, dev->frequency);
 }

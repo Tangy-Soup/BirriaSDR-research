@@ -24,7 +24,7 @@
  *
  * Public enumeration, read/cancel handling and USB transfer management can be
  * shared. The existing framer and raw14 Q,I decoder describe our original
- * firmware's ABI, not a universal MediaTek protocol. A new backend must produce
+ * firmware's ABI, not a universal chipset protocol. A new backend must produce
  * that ABI or provide an explicit adapter before sharing the receive path.
  * Add backend limits/capabilities with evidence and offline protocol tests;
  * keep uncharacterized controls unsupported. See docs/architecture.md for
@@ -66,11 +66,29 @@ static int validate(uint64_t frequency, uint32_t rate, const struct birriasdr_ga
     return BIRRIASDR_ERROR_UNSUPPORTED;
 }
 
+/* TODO: identify owned gain fields and validate live application and rollback. */
+static int change_gain(birriasdr_dev_t *dev, bool manual, const struct birriasdr_gain *gain)
+{
+    (void)dev;
+    (void)manual;
+    (void)gain;
+    return BIRRIASDR_ERROR_UNSUPPORTED;
+}
+
+/* TODO: decode and validate this die's synthesizer before exposing live tuning. */
+static int change_frequency(birriasdr_dev_t *dev, uint64_t frequency)
+{
+    (void)dev;
+    (void)frequency;
+    return BIRRIASDR_ERROR_UNSUPPORTED;
+}
+
 const struct bs_backend bs_mt7925_backend = {
     .chipset = BIRRIASDR_CHIP_MT7925,
     .name = "MT7925 (unimplemented)",
     .validate = validate,
     .identify = control,
     .prepare = prepare, .start = control, .stop = control,
-    .status = status, .reset = control
+    .status = status, .reset = control, .change_gain = change_gain,
+    .change_frequency = change_frequency
 };

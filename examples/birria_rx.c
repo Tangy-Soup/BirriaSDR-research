@@ -66,7 +66,22 @@ static int list_devices(void)
     return 0;
 }
 
-/* Record device 0, with optional finite count and raw manual gain codes.
+/* Parse decimal counts/Hz without accepting negative wrap or ignored suffixes. */
+static int parse_number(const char *text, uint64_t *value)
+{
+    char *end;
+    unsigned long long number;
+    if (*text < '0' || *text > '9')
+        return -1;
+    errno = 0;
+    number = strtoull(text, &end, 10);
+    if (errno || *end || !number || number > UINT64_MAX)
+        return -1;
+    *value = (uint64_t)number;
+    return 0;
+}
+
+/* Record device 0, with optional center, finite count and raw manual gain codes.
  * Keep the example's flags small; applications can use the full public API.
  */
 int main(int argc, char **argv)
@@ -74,21 +89,22 @@ int main(int argc, char **argv)
     birriasdr_dev_t *dev = NULL;
     struct birriasdr_stream_stats stats;
     struct recorder recorder = {0};
-    int result, close_result;
+    uint64_t frequency = 0;
+    int result, close_result, argument = 1;
     if (argc == 2 && !strcmp(argv[1], "--list"))
         return list_devices();
-    if (argc < 2 || argc > 4) {
-        fprintf(stderr, "Usage: %s --list | output.cs16 [complex-samples [manual]]\n", argv[0]);
+    if (argc > 1 && !strcmp(argv[1], "--frequency")) {
+        if (argc < 4 || parse_number(argv[2], &frequency))
+            return 1;
+        argument = 3;
+    }
+    if (argc - argument < 1 || argc - argument > 3) {
+        fprintf(stderr, "Usage: %s --list | [--frequency Hz] output.cs16 [complex-samples [manual]]\n", argv[0]);
         return 1;
     }
-    if (argc >= 3) {
-        char *end;
-        errno = 0;
-        recorder.limit = strtoull(argv[2], &end, 10);
-        if (errno || *end || !*argv[2] || argv[2][0] == '-' || !recorder.limit)
-            return 1;
-    }
-    if (argc == 4 && strcmp(argv[3], "manual"))
+    if (argc - argument >= 2 && parse_number(argv[argument + 1], &recorder.limit))
+        return 1;
+    if (argc - argument == 3 && strcmp(argv[argument + 2], "manual"))
         return 1;
     result = birriasdr_open(&dev, 0);
     if (result < 0) {
@@ -96,13 +112,21 @@ int main(int argc, char **argv)
         return 1;
     }
     recorder.dev = dev;
-    recorder.file = fopen(argv[1], "wbx");
+    if (frequency) {
+        result = birriasdr_set_center_freq(dev, frequency);
+        if (result < 0) {
+            fprintf(stderr, "Frequency: %s\n", birriasdr_strerror(result));
+            birriasdr_close(dev);
+            return 1;
+        }
+    }
+    recorder.file = fopen(argv[argument], "wbx");
     if (!recorder.file) {
         perror("Output (must not already exist)");
         birriasdr_close(dev);
         return 1;
     }
-    if (argc == 4) {
+    if (argc - argument == 3) {
         const struct birriasdr_gain gain = {2, 8, 0};
         result = birriasdr_set_tuner_gain_mode(dev, 1);
         if (!result)

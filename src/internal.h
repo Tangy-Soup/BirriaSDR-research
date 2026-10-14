@@ -16,7 +16,7 @@
 #define BS_FRAME_BYTES (44u + BS_PAYLOAD_BYTES + 4u)
 
 enum bs_space { BS_MMIO, BS_UHW, BS_BRIDGE };
-enum bs_run_state { BS_IDLE, BS_RUNNING, BS_CANCELLING };
+enum bs_run_state { BS_IDLE, BS_RUNNING, BS_CANCELLING, BS_CONTROL_FAILED };
 
 /* Register I/O is injectable for ordered hardware-sequence and failure tests.
  * It keeps RF code independent of libusb packet details without hiding errors.
@@ -32,6 +32,7 @@ struct bs_backend {
     const char *name;
     uint32_t capabilities;
     uint64_t default_frequency;
+    uint64_t min_frequency, max_frequency;
     uint32_t default_rate;
     int (*validate)(uint64_t frequency, uint32_t rate, const struct birriasdr_gain *gain);
     int (*identify)(birriasdr_dev_t *);
@@ -40,6 +41,8 @@ struct bs_backend {
     int (*stop)(birriasdr_dev_t *);
     int (*status)(birriasdr_dev_t *, uint32_t words[16]);
     int (*reset)(birriasdr_dev_t *);
+    int (*change_gain)(birriasdr_dev_t *, bool manual, const struct birriasdr_gain *);
+    int (*change_frequency)(birriasdr_dev_t *, uint64_t frequency);
 };
 
 struct bs_usb_id {
@@ -58,16 +61,30 @@ struct birriasdr_dev {
     const struct bs_backend *backend;
     struct bs_io io;
     atomic_uint run_state;
-    uint64_t frequency;
+    /* Serializes whole register procedures, not individual USB transfers.
+     * Application callbacks and the USB event pump never hold this mutex.
+     */
+    pthread_mutex_t control_mutex;
+    bool control_ready;
+    int control_error;
+    enum birriasdr_stage control_error_stage;
+    birriasdr_recovery_cb_t recovery_callback;
+    void *recovery_context;
+    uint32_t recovery_limit;
+    atomic_uint_fast64_t frequency;
     uint32_t rate;
     bool manual;
     struct birriasdr_gain gain;
     uint32_t nonce;
     uint8_t command_sequence;
     bool touched;
+    bool needs_usb_reset;
+    bool usb_lost;
     struct {
         uint32_t gain_baseline[4];
         bool gain_saved;
+        uint32_t filter_baseline[4];
+        bool filter_saved;
     } mt7921;
     struct birriasdr_stream_stats stats;
 };
@@ -93,6 +110,8 @@ int bs_usb_error(int error);
 int bs_control(birriasdr_dev_t *dev, uint8_t type, uint8_t request,
                uint16_t value, uint16_t index, uint8_t *data, uint16_t length);
 int bs_bulk_out(birriasdr_dev_t *dev, uint8_t endpoint, const uint8_t *data, int length);
+int bs_usb_prepare_endpoints(birriasdr_dev_t *dev);
+int bs_usb_recover(birriasdr_dev_t *dev);
 int bs_read32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address, uint32_t *value);
 int bs_write32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address, uint32_t value);
 int bs_update32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,

@@ -40,7 +40,7 @@ static void cancel_transfers(struct bs_reader *reader)
 }
 
 /* Completion callbacks only copy USB bytes into a bounded queue and re-submit.
- * RF control and application callbacks run on the read caller's thread instead,
+ * RF control and application callbacks run outside libusb callbacks instead,
  * avoiding libusb event-lock recursion and preventing Python-style scheduling
  * gaps between individual USB reads. A full queue is an explicit error.
  */
