@@ -1,0 +1,19 @@
+libbirriasdr
+Original work copyright (c) 2026 Luigi C. MIT license, see LICENSE.
+
+src/usb.c and src/chips/mt7921_boot.c adapt the existing BSD-3-Clause-Clear
+userland MT76 transport in this research project. Retained copyright notices,
+conditions and disclaimer are in LICENSES/BSD-3-Clause-Clear.txt. Source lineage:
+https://github.com/openwrt/mt76/tree/c5a3bd91aa735b669618610d5f0ebfa5786845a6
+
+The high-level API takes design inspiration from librtlsdr. No librtlsdr
+implementation is incorporated: https://github.com/osmocom/rtl-sdr
+
+The PHY gain-register layout was a research lead from w1700k-sdr, subsequently
+checked against this device's ROM and hardware. That chipset's calibration
+tables are not included: https://github.com/h0m3us3r/w1700k-sdr/tree/7f151711eede9bdc0e17763c54bd6f2dc1d10662
+
+libusb is a separate dependency under LGPL-2.1-or-later. The library does not
+embed libusb, NumPy, Python, a MediaTek ROM dump, or vendor RAM/patch firmware.
+The original device program calls immutable factory-ROM routines already present
+in the chip. No nonvolatile programming is implemented.

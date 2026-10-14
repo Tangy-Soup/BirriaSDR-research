@@ -1,0 +1,12 @@
+prefix=${pcfiledir}/@BIRRIA_PC_TO_PREFIX@
+exec_prefix=${prefix}
+libdir=${pcfiledir}/..
+includedir=${pcfiledir}/@BIRRIA_PC_TO_INCLUDE@
+
+Name: birriasdr
+Description: Userland Wi-Fi I/Q receiver with original device firmware
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lbirriasdr
+Libs.private: -lpthread
+Requires.private: libusb-1.0
+Cflags: -I${includedir}

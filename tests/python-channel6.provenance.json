@@ -1,0 +1,15 @@
+{
+  "fixture": "python-channel6.trace",
+  "writes": 300,
+  "sha256": "312073bbc117ae6a76978c0010f1e91ce6c1a33085a8ce89d5fef44677b2e86f",
+  "reference_sources": {
+    "baremetal/capture.py": "b2680ee30761380332a14996060eb6ab171ed8aeb7da351879a69b6258de2b96",
+    "baremetal/rf_init.py": "a1607190142acd12183db4b7dd905ba4f9efc319f85b4d322534c659934a3e04",
+    "baremetal/rf_tune.py": "2bf5119321ca421efe4467a6b3515690a800758f78b4e42665fcb573d4045c54",
+    "baremetal/rf_probe.py": "bc63ea18e61b2e52a0f60f3e5a091f22248ec2807fff5c2846934a21bfd83b8a",
+    "baremetal/agc_probe.py": "142c462ba4d00d6382e9aad024a024bda50b682f4b1ad7ef1a5caa66be23358e",
+    "baremetal/agc.py": "118281e3568b3480a1f3cf1f8d318213087585ede492c9fa976b9b29ecd41da0"
+  },
+  "generator_archive": "evidence/c-library-reference-trace.source.py",
+  "note": "Deterministic register-model trace, not a hardware dump. Libraries do not require the Python prototype."
+}

@@ -1,52 +1,225 @@
 # BirriaSDR
 
+Turn a supported USB Wi-Fi dongle into an experimental SDR receiver with
+**14-bit I/Q at 40 MSps complex**.
+
+This repository has two independent ways to use the hardware:
+
+- **[Proof of concept](#proof-of-concept-cyberether-flowgraph)**: a
+  self-contained CyberEther flowgraph with a Python receiver, gain controls and
+  a spectrum/waterfall. Nothing to compile.
+- **[C library](#c-library)**: a small C11 library, `libbirriasdr`,
+  with a librtlsdr-style API, plus a command-line recorder.
+
 > [!IMPORTANT]
 >
-> This is an experimental proof-of-concept. The production-quality library and the full documentation of the registers will be posted later.
-
-Turn a supported USB 3.0 Wi-Fi dongle (MT7961/MT7921AU) into an experimental **2.4/5 GHz SDR receiver** with **14-bit I/Q at 40 MSps complex**, using a single CyberEther flowgraph. This is an experimental script. Use at your own risk.
-
-**[Download CyberEther](https://cyberether.org/) · [Installation guide](https://cyberether.org/docs/installation) · [Python setup](https://cyberether.org/docs/python-block#choosing-a-python-runtime) · [Open the flowgraph](mediatek-usb-sdr.yml)**
+> This is experimental software. Only one board and one receive profile are
+> qualified, and frequency and gain are uncalibrated. Use at your own risk.
 
 https://github.com/user-attachments/assets/64e9fbbd-1f16-4c7b-905c-5624b9c574b7
 
-## Get started
+## Background
 
-1. Install **CyberEther** (https://cyberether.org/) and Python 3.11+.
-2. Select that Python under **Settings → Runtime → Python Runtime**, then restart CyberEther if you changed it.
-3. Connect a COMFAST MT7961/MT7921AU dongle. Disconnect its Wi-Fi connection first.
-4. Download [birriaSDR.yml](birriaSDR.yml) and open it in CyberEther. Allow its declared Python dependencies to install. Stock firmware downloads automatically, with checksum verification and caching.
-5. Leave `PYTHON=None`. Edit `CHANNEL` near the top of the Python block to tune, then reload. The default is channel 6 (2437 MHz).
+Wi-Fi chipsets contain a complete wideband receiver: an analog front end that
+tunes, filters and amplifies the antenna signal, followed by a digital physical
+layer that works on complex baseband samples. MediaTek parts also include an
+internal I/Q capture engine (ICAP) intended for calibration and debugging.
+BirriaSDR repurposes that path to stream raw samples to the host over USB.
 
-**Linux:** the USB worker uses `sudo -n`; it must have permission to run without a password prompt. With USB permissions already configured, set `USE_SUDO=False`. **macOS:** direct USB access is the default.
-
-One output carries all I/Q samples to the spectrum and waterfall, with both averaging settings at 1. The sampled span is 40 MHz; the receiver filter is currently configured for 20 MHz. Firmware runs in RAM; no flashing or compilation is required to use the flowgraph.
-
-## Optional: rebuild the assembly
-
-Use **GNU Binutils 2.35.2 targeting `nds32le-elf`**. From this folder:
-
-```sh
-build_dir=$(mktemp -d)
-nds32le-elf-as -EL -march=v3 -mno-all-relax -o "$build_dir/raw_dma.o" raw_dma.S
-nds32le-elf-ld --no-relax -e producer -T /dev/stdin \
-  -o "$build_dir/raw_dma.elf" "$build_dir/raw_dma.o" <<'EOF'
-SECTIONS {
-  .entry 0x95c7a0 : { *(.entry) }
-  .text  0x96c276 : { *(.text) }
-}
-EOF
-nds32le-elf-objcopy -O binary -j .entry "$build_dir/raw_dma.elf" "$build_dir/entry.bin"
-nds32le-elf-objcopy -O binary -j .text "$build_dir/raw_dma.elf" "$build_dir/text.bin"
+```mermaid
+flowchart LR
+    rf["RF/PHY chain 0"] --> icap["ICAP"]
+    icap --> sram["Circular SRAM"]
+    sram --> dma["Device DMA"]
+    dma --> usb["USB"]
+    usb --> host["Host I/Q"]
 ```
 
-The two `.bin` files total **790 bytes** and reproduce the patch already embedded in the flowgraph. Editing the assembly requires updating the block's `PATCH_RECIPE` and resulting firmware hash; see the [assembly header](raw_dma.S) for details.
+The host configures the RF front end and capture engine directly through
+registers. The capture engine writes samples into internal memory, and an
+original 1,120-byte device program, loaded through the chip's immutable boot
+ROM, submits that memory to USB DMA. The host verifies the stream and delivers
+I/Q to the application.
+
+No MediaTek RAM firmware or ROM patch is downloaded, and nothing is written to
+flash or eFuse; all configuration is volatile. The device program's assembly
+source is in [`firmware/iq_stream.S`](firmware/iq_stream.S) and is embedded in
+both the flowgraph and the library.
+
+The tested hardware is the **COMFAST MT7961/MT7921AU dongle (`3574:6211`)**,
+an MT7961 digital die paired with an MT7972 analog die. The current profile is
+channel 6 (nominal 2437 MHz), receive chain 0, at 40 million complex samples per
+second. That rate represents a 40 MHz sampled span, but the analog receive
+filter currently uses a **20 MHz profile** and rolls off; this is not a claim of
+40 MHz flat usable bandwidth.
+
+For more detail, see:
+
+- [Receiver overview](docs/hardware.md)
+- [MT7921 / MT7961 / MT7972 receiver](docs/mt7921.md), including the register reference
+- [Architecture and adding a chipset](docs/architecture.md)
+
+### Specifications
+
+| Parameter | Current value |
+| --- | --- |
+| Hardware | COMFAST dongle `3574:6211`: MediaTek MT7961 digital die + MT7972 analog die |
+| Frequency coverage | Fixed at 2437 MHz (Wi-Fi channel 6); other 2.4 GHz channels and 5 GHz not enabled yet |
+| Sample rate | 40 MSps complex, fixed |
+| Sampled bandwidth | 40 MHz span; analog filter uses a 20 MHz profile and rolls off inside it |
+| Sample resolution | 14-bit signed I and Q, range −8192…8191 |
+| Receive channels | One (chain 0) |
+| Transmit | None; receive only |
+| Gain | Raw codes: LNA 0–3, filter stage 0–8, digital 0–12; not calibrated in dB |
+| Automatic gain | Overrides can be released; full AGC control not implemented |
+| Frequency accuracy | Uncalibrated; no ppm correction |
+| Reference clock | On-board 40 MHz crystal |
+| Host interface | Bulk transfers over USB 3.0, about 161 MB/s |
+| Output format | Interleaved signed 16-bit I,Q (`cs16`); the flowgraph emits CF32 |
+| Firmware | Original 1,120-byte RAM program; no vendor firmware, nothing flashed |
+| Host platforms | Linux (tested on Raspberry Pi 5) and macOS (not hardware-tested) |
+
+## Proof of concept: CyberEther flowgraph
+
+**[Download CyberEther](https://cyberether.org/) ·
+[Installation guide](https://cyberether.org/docs/installation) ·
+[Python setup](https://cyberether.org/docs/python-block#choosing-a-python-runtime) ·
+[Flowgraph](cyberether/birriasdr-no-mediatek.yml)**
+
+The flowgraph contains the RF-corrected Python receiver, gain controls and a
+spectrum/waterfall. It is self-contained and does not require building the C
+library or downloading MediaTek firmware.
+
+1. Install the **CyberEther desktop app** with Python-block support and
+   **Python 3.11+** on Linux or macOS.
+2. Select that interpreter under **Settings → Runtime → Python Runtime** and
+   restart CyberEther. Leave `PYTHON = None` in the receiver block so its USB
+   worker uses the same interpreter.
+3. Connect the **COMFAST MT7961/MT7921AU dongle (`3574:6211`)** through USB 3.0.
+   Disconnect its Wi-Fi connection, stop other receivers using it and follow
+   the [USB setup instructions](cyberether/README.md#usb-setup).
+4. Open [birriasdr-no-mediatek.yml](cyberether/birriasdr-no-mediatek.yml) in
+   CyberEther and allow its declared Python dependencies to install. The
+   receiver starts feeding **Output 0** into the spectrum and waterfall.
+5. To adjust gain, edit `GAIN_MODE`, `LNA_GAIN`, `LPF_GAIN` and `DIGITAL_GAIN`
+   near the top of the Python block, then reload it. The
+   [gain settings](cyberether/README.md#gain-controls) describe their ranges.
+   Open the block's **Console** for errors; close the flowgraph to stop capture.
+
+The single output carries all captured samples without averaging or decimation;
+both display averaging settings are 1.
+
+## C library
+
+The `libbirriasdr` library follows the familiar enumerate → open → configure →
+read → cancel → close pattern of
+[librtlsdr](https://github.com/osmocom/rtl-sdr/blob/master/include/rtl-sdr.h).
+It depends only on libusb and needs no Python runtime or MediaTek firmware
+download.
+
+### Build and try
+
+Install a C compiler, CMake, and libusb development files. On Debian/Ubuntu:
+`sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev`.
+On macOS with Homebrew: `brew install cmake pkg-config libusb`.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+./build/birria_rx --list
+./build/birria_rx capture.cs16 8000000 manual
+```
+
+The last command captures eight million complex samples on device 0, using
+manual gain codes `(LNA=2, LPF=8, digital=0)`. Omit `manual` to release gain
+overrides. Omit the sample count to record until Ctrl-C. The file contains
+little-endian signed 16-bit **I, Q** pairs, each component in `[-8192,8191]`.
+There is no averaging or decimation. Output files must not already exist.
+Always check the exit status: an error means the capture is incomplete or its
+continuity was not established, even if a file contains samples.
+
+The dongle must start with **no vendor ROM patch loaded** and its Wi-Fi interface
+available to libusb. A software reset does not remove a retained patch. On Linux,
+prevent automatic Wi-Fi driver binding before reconnecting the dongle, and grant
+USB access (or run the example with `sudo`). On macOS, reconnect first if another
+driver previously loaded firmware. The library refuses an active kernel driver;
+it never unloads drivers or power-cycles a USB hub.
+
+### API
+
+Include [`birriasdr.h`](include/birriasdr.h); it documents every function, units,
+ownership, threading and error behavior. The
+[recorder example](examples/birria_rx.c) is a complete application. The main
+entry points are:
+
+```c
+birriasdr_get_device_count();
+birriasdr_get_device_info(index, &info);
+birriasdr_open(&dev, index);
+birriasdr_set_center_freq(dev, 2437000000ULL);
+birriasdr_set_sample_rate(dev, 40000000);
+birriasdr_set_tuner_gain_mode(dev, 1);
+birriasdr_set_gain_codes(dev, &gain);
+birriasdr_read_async(dev, callback, context, 0, 0);
+birriasdr_cancel_async(dev); /* From callback or another normal thread. */
+birriasdr_close(dev);
+```
+
+This is an API outline; check every return value as the example does. Frequencies
+use 64 bits so the API can represent future 5 GHz operation. Gain codes are
+separate from the reserved calibrated-dB API.
+
+The `read_async` function blocks its caller while a dedicated libusb event thread
+keeps USB requests queued. Callbacks receive borrowed native-endian `int16_t` I,Q buffers,
+complex-sample counts and a stream-relative sample index. Only `cancel_async`
+may run concurrently on that handle. Setters are staged for the next read and
+return busy during capture. Callbacks must return promptly; there is no silent
+sample dropping when the device or host queue overflows.
+
+The `read_sync` function captures a finite multiple of 2,048 complex samples
+using the same USB engine. Separate read calls are separate acquisitions, not a gapless stream.
+Both read paths verify framing, sequence, nonce, raw14 encoding, terminal state
+and DMA counts; both reset on exit. Statistics include the last initialization
+stage and any reset failure. Cancellation drains packets already submitted by
+the device, so callbacks may continue until `read_async` returns.
+
+### Install and link
+
+```sh
+cmake --install build --prefix /your/prefix
+cc app.c $(pkg-config --cflags --libs birriasdr) -o app
+```
+
+Add your prefix's `lib/pkgconfig` (or platform-specific libdir) to
+`PKG_CONFIG_PATH`. Shared builds are the default; use `-DBUILD_SHARED_LIBS=OFF`
+for a static library and `pkg-config --static` when linking it.
+
+### Source layout and firmware
+
+Functions have comments above their definitions explaining their hardware role,
+ordering requirements and unresolved assumptions. Register sequences are split
+into clock, synthesizer, routing, gain, capture and boot operations. Unconditional
+constant writes use small ordered tables; handshakes and timing stay explicit.
+
+Normal builds use the checked-in original firmware header. To rebuild it, install
+GNU binutils targeting NDS32 and run:
+
+```sh
+python3 tools/rebuild_firmware.py --check
+```
+
+Remove `--check` to replace the header after changing the assembly. The script
+assembles `firmware/iq_stream.S`, links at `0x00915000`, then adds the PDA alignment
+and checksum trailer. Python is needed only for this optional development step.
+No vendor binary or ROM dump is an input.
 
 ## License
 
-Original BirriaSDR code, flowgraph, assembly and documentation are **[MIT licensed](https://opensource.org/license/mit)**. **Use at your own risk. The software is provided as is, without warranty; the MIT terms below include the disclaimer of liability.**
-
-The included driver retains its BSD-3-Clause-Clear notices. Downloaded MediaTek firmware and separately installed dependencies retain their own licenses. Full third-party notices are included near the top of the flowgraph's Python code, after the settings.
+Original library, RF code, examples and firmware: **MIT.**
+The USB/ROM transport adaptations retain **BSD-3-Clause-Clear** notices. See
+[LICENSE](LICENSE), [NOTICE](NOTICE) and [the retained license](LICENSES/BSD-3-Clause-Clear.txt).
+The software is provided without warranty; use at your own risk.
 
 ## Acknowledgements
 
