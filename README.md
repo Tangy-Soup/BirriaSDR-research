@@ -7,7 +7,8 @@ BirriaSDR ships as `libbirriasdr`, a C11 library with an API modeled on
 librtlsdr, together with a command-line recorder. It talks to the device from
 userspace through libusb and includes the source of its own small device
 program. Start with [Build and try](#build-and-try), or jump to the [API](#api)
-to add the receiver to an application.
+to add the receiver to an application. To see it working without building
+anything, try the rough [proof of concept](#proof-of-concept).
 
 > [!IMPORTANT]
 >
@@ -84,6 +85,24 @@ For more detail, see:
 | Output format | Interleaved signed 16-bit I and Q (`cs16`). Buffers from the API are native-endian, and recorder files are little-endian |
 | Firmware | Original 1,120-byte RAM program. No vendor firmware and nothing flashed |
 | Host platforms | Linux (tested on Raspberry Pi 5) and macOS (not tested with hardware) |
+
+## Proof of concept
+
+**The [CyberEther](https://cyberether.org/) flowgraph in
+[`cyberether/birriasdr.yml`](cyberether/birriasdr.yml) is a very rough proof of
+concept.** It exists so people can quickly test the dongle and watch a live
+spectrum without building anything. It runs its own Python receiver, separate
+from the C library, with a fixed channel 6 profile, an older 20 MHz analog
+filter and no automatic recovery. Expect rough edges and runs that stop on an
+overrun. For anything beyond a quick test, use the C library.
+
+To try it, install the CyberEther desktop app with a Python 3.11 or newer
+runtime and select that interpreter under **Settings → Runtime → Python
+Runtime**. Connect the dongle to a USB 3.0 port, open the flowgraph and let it
+install its Python dependencies. The note inside the flowgraph explains the USB
+setup for each platform and the gain settings. On a Raspberry Pi 5, the
+flowgraph power-cycles the USB ports by default, which needs root and only works
+when the dongle is the only USB device connected.
 
 ## Build and try
 

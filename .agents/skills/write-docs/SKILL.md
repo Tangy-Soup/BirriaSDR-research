@@ -138,6 +138,9 @@ Follow these principles when you describe behavior:
 **Paragraphs and lists**
 
 - Wrap prose near 80 columns. Table rows and list items may run long.
+- The note block in `cyberether/birriasdr.yml` is the exception. CyberEther
+  renders every newline as a line break, so write each paragraph and list item
+  there as a single line, with blank lines between blocks.
 - Use a paragraph for explanation and a list for parallel items. Numbered lists
   are for ordered steps, such as adding a chipset.
 - Each list item follows the sentence rules, including the rule about starting
@@ -202,10 +205,11 @@ checks and what it does not claim. Say whether it runs through CTest or needs
 hardware.
 
 **The README** keeps this order: title and one-line summary, the experimental
-callout, background with the diagram, specifications table, build and try, API,
-automatic recovery, stability tests, install and link, source layout and
-firmware, license and acknowledgements. When a value changes, update the README
-specifications table and diagram together with the backend page.
+callout, background with the diagram, specifications table, proof of concept,
+build and try, API, automatic recovery, stability tests, install and link,
+source layout and firmware, license and acknowledgements. When a value
+changes, update the README specifications table and diagram together with the
+backend page.
 
 ## Vendor and licensing language
 
