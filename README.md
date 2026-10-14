@@ -17,6 +17,8 @@ anything, try the rough [proof of concept](#proof-of-concept).
 > 2610 MHz. Sensitivity across that range, frequency accuracy and gain are not
 > calibrated. Use at your own risk.
 
+https://github.com/user-attachments/assets/64e9fbbd-1f16-4c7b-905c-5624b9c574b7
+
 ## Background
 
 Wi-Fi chipsets contain a complete wideband receiver. An analog front end tunes,

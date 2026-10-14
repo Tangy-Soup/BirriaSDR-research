@@ -6,6 +6,7 @@ import re
 import sys
 
 BAD_START = re.compile(r'^(\[|<?https?:|`|\d|[A-Z][A-Z0-9\/]+\b|[A-Z]+\d)')
+EMBED = re.compile(r'^https://github\.com/user-attachments/assets/\S+$')
 SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+(?=\S)')
 FORBIDDEN = (('—', 'em dash'), ('–', 'en dash'), (';', 'semicolon'))
 
@@ -33,7 +34,7 @@ def check(path, strict):
     while number < len(lines):
         line = lines[number]
         stripped = line.strip()
-        if not stripped or stripped.startswith('#'):
+        if not stripped or stripped.startswith('#') or EMBED.match(stripped):
             number += 1
             continue
         if stripped.startswith('|'):

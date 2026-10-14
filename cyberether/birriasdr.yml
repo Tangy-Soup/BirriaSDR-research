@@ -3,8 +3,7 @@ title: BirriaSDR proof of concept (experimental)
 summary: Rough proof-of-concept I/Q stream using the original BirriaSDR firmware.
 author: Luigi C.
 license: MIT
-description: No vendor firmware downloads. Single 40 MSps complex output. Cold channel 6 reception verified
-  on the tested COMFAST dongle and Raspberry Pi 5.
+description: No vendor firmware downloads. Single 40 MSps complex output. Cold channel 6 reception verified on the tested COMFAST dongle and Raspberry Pi 5.
 graph:
 - name: instructions
   module: note

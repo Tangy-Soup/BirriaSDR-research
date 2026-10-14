@@ -173,6 +173,9 @@ Follow these principles when you describe behavior:
 - Make link text describe the target, such as "the [filter reference](...)".
   Never write a bare URL or "click here".
 - Place a link inside a sentence, never at its start.
+- The one exception is an embedded GitHub video or image. GitHub only renders
+  the player when the `https://github.com/user-attachments/assets/...` URL sits
+  alone on its own line, so leave it bare, as the README demo video does.
 
 **Emphasis and callouts**
 
