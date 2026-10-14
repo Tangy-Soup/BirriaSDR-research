@@ -1,0 +1,21 @@
+# CMake build trees
+build/
+build-*/
+cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+
+# Captures written by birria_rx
+*.cs16
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Editors and OS files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
