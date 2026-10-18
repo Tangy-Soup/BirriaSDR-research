@@ -131,6 +131,71 @@ static void reset_mock(unsigned limit, unsigned fail_submit)
     mock.fail_submit = fail_submit;
 }
 
+/* Wait for the fake device to fill all 32 queue slots and park completions. */
+static void wait_completions(unsigned count)
+{
+    uint64_t deadline = bs_now_ns() + UINT64_C(1000000000);
+    for (;;) {
+        pthread_mutex_lock(&mock.mutex);
+        unsigned completed = mock.completions;
+        pthread_mutex_unlock(&mock.mutex);
+        if (completed >= count) return;
+        CHECK(bs_now_ns() < deadline);
+        bs_sleep_us(1000);
+    }
+}
+
+/* The USB reader only checks the opt-in. Gap parsing belongs to stream.c. */
+static void unused_gap(const struct birriasdr_recovery_event *event, void *context)
+{
+    (void)event; (void)context;
+    abort();
+}
+
+/* Retaining completed requests must preserve every byte in order while using
+ * bounded storage. Also destroy fully/partly parked readers and inject failure
+ * when the consumer first resumes one. No libusb-owned buffer may be freed.
+ */
+static void test_backpressure(void)
+{
+    birriasdr_dev_t dev = {.stream_continuous = true, .recovery_limit = 1,
+                          .recovery_callback = unused_gap};
+    struct bs_reader *reader;
+    uint8_t bytes[BS_USB_BYTES];
+    size_t length;
+    reset_mock(160, 0);
+    CHECK(bs_reader_create(&dev, 4, &reader) == 0);
+    CHECK(bs_reader_start(reader) == 0);
+    wait_completions(36);
+    bs_sleep_us(5000);
+    pthread_mutex_lock(&mock.mutex);
+    CHECK(mock.completions == 36 && mock.count == 0);
+    pthread_mutex_unlock(&mock.mutex);
+    for (unsigned i = 1; i <= 160; ++i) {
+        CHECK(bs_reader_take(reader, bytes, &length, 1000) == 0);
+        CHECK(length == 16 && bytes[0] == i && bytes[15] == i);
+        if (i % 20 == 0) bs_sleep_us(1000);
+    }
+    CHECK(bs_reader_take(reader, bytes, &length, 5) == BIRRIASDR_ERROR_TIMEOUT);
+    bs_reader_destroy(reader);
+    for (unsigned count = 34; count <= 36; ++count) {
+        reset_mock(count, 0);
+        CHECK(bs_reader_create(&dev, 4, &reader) == 0);
+        CHECK(bs_reader_start(reader) == 0);
+        wait_completions(count);
+        bs_reader_destroy(reader);
+    }
+    reset_mock(100, 37);
+    CHECK(bs_reader_create(&dev, 4, &reader) == 0);
+    CHECK(bs_reader_start(reader) == 0);
+    wait_completions(36);
+    CHECK(bs_reader_take(reader, bytes, &length, 1000) == 0);
+    CHECK(bytes[0] == 1 && length == 16);
+    CHECK(bs_reader_take(reader, bytes, &length, 1000) == BIRRIASDR_ERROR_IO);
+    bs_reader_destroy(reader);
+    reset_mock(0, 0);
+}
+
 /* Clean shutdown, consumer timeout, partial startup and resubmit failure must
  * all leave zero in-flight transfers and exactly one free per allocation.
  */
@@ -201,6 +266,7 @@ int main(void)
     CHECK(bs_reader_take(reader, bytes, &length, 1000) == BIRRIASDR_ERROR_OVERRUN);
     bs_reader_destroy(reader);
     reset_mock(0, 0);
+    test_backpressure();
     puts("USB transfer ownership and failure tests passed");
     return 0;
 }

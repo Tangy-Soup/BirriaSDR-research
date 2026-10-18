@@ -30,33 +30,42 @@ SOFTWARE.
 .equ SLOT_STRIDE, 0x3000
 .equ RING_COUNT, 0x4
 .equ PAYLOAD_BYTES, 0x2000
-/* SPDX-License-Identifier: MIT
- * Copyright (c) 2026 Luigi C. See LICENSE.
- * Original continuous ICAP SRAM -> serial USB DMA diagnostic.
- * No downloaded vendor firmware; ROM PHY power-on only.
- * Extra mailbox words: 16 produced units, 17 final ICAP control,
- * 18 final producer, 19 power-on return, 20 maximum backlog (units),
- * 21 maximum producer poll interval (microseconds).
- * Additional terminal states: 8 ambiguous wrap, 9 source overrun,
- * 10 source timeout. All stop capture and drain the DMA descriptor.
- * RF tuning/calibration are NOT implemented by this diagnostic.
- */
-    .set IQ_STREAM, 1
-    /* SPDX-License-Identifier: MIT
- * Copyright (c) 2026 Luigi C. See LICENSE.
+/*
+ * Original continuous I/Q exporter from capture SRAM to serial USB DMA.
+ * The only ROM call powers on the PHY. No vendor RAM firmware is downloaded.
+ * The immutable boot ROM handles USB enumeration and program download.
+ * The host owns RF tuning and gain, then releases GO after queuing USB reads.
+ * All descriptors and headers reside in dedicated MCU data memory.
+ * The program parks after publishing a terminal state until a subsystem reset.
+ * Opted-in continuous reads instead recover source faults inside this program.
  *
- * Original standalone synthetic USB DMA producer. No ROM helper calls,
- * allocator, instruction tables, vendor RAM image or radio initialization.
- * Uses dedicated DLM descriptors, headers and payloads, outside ROM workspace.
- * The immutable ROM handles enumeration/download before this entry.
+ * Mailbox offsets are bytes from MAILBOX. The host supplies the nonce at +4,
+ * packet limit at +32 (zero means until STOP), STOP at +36 and GO at +60.
+ * The program reports state at +28, submitted/completed counts at +40/+44,
+ * elapsed microseconds at +48 and DMA error status at +52.
+ * The exporter submits one SRAM descriptor at a time and waits for completion
+ * before releasing its source bytes. It tracks producer progress while waiting
+ * for both data and DMA, reporting source overrun or ambiguous producer timing
+ * as explicit gaps or terminal failures rather than hiding overwritten samples.
  *
- * Mailbox words: magic, nonce, answer, PSW, SP, GP, LP, state,
- * packet limit (0=until stop), stop, submitted, completed, ticks, DMA errors,
- * initial timer, go. State: 1 ready/running, 2 finite done, 3 host stop,
- * 4 DMA timeout, 5 start timeout, 6 initial DMA busy.
- * At most three packets are outstanding; every buffer is reused only after DMA
- * completes it. No interrupts or vendor software ring accounting are used.
- * After completion this program parks until a host WFSYS reset.
+ * State values: 1 ready/running, 2 finite done, 3 host stop, 4 DMA timeout,
+ * 5 GO timeout, 6 initial DMA busy, 8 ambiguous wrap, 9 source overrun and
+ * 10 source timeout. Source faults and normal stops drain the descriptor before
+ * stopping capture.
+ * Extra mailbox offsets: +64 produced units, +68 final capture control,
+ * +72 producer position, +76 ROM power-on result, +80 maximum backlog and
+ * +84 maximum poll interval in microseconds. The scratch words at +88/+92
+ * hold the preceding poll time and completed source units.
+ * The host enables local recovery at +96. The words at +100/+104 hold the
+ * packet count at the current SRAM epoch and the cumulative gap count.
+ * The scratch flag at +108 records whether ICAP is actively producing.
+ * A 48-byte event (extended ID 0xf6) precedes each new epoch. It carries the
+ * fault at header +8, gap count at +12, next data sequence at +36 and nonce
+ * at +40. Its four-byte trailer is not data. The host must discard the last
+ * held data packet because DMA may have read it while ICAP overwrote it.
+ * Recovery drains DMA, stops ICAP, sends and drains this marker, then restarts
+ * ICAP at offset zero. It does not reset USB, the PHY, gain or the synthesizer.
+ * Only known source faults are recoverable. DMA errors and timeouts still park.
  */
     .section .text.entry,"ax"
     .global _start
@@ -65,14 +74,11 @@ SOFTWARE.
     sethi \reg, (\value >> 12)
     ori \reg, \reg, (\value & 0xfff)
     .endm
-    .ifdef IQ_SNAPSHOT
-    .set IQ_CAPTURE, 1
-    .endif
-    .ifdef IQ_STREAM
-    .set IQ_CAPTURE, 1
     /* Observe the live capture even while USB is stalled. One address unit is
-     * one complex sample; the SRAM ring contains 65536 units. Scratch r0/r1/r3,
-     * preserve the DMA wait counter (r2) and all ring/buffer registers. */
+     * four SRAM bytes, or one complex sample in the fixed 40 MSps format. The
+     * ring contains 65536 units (1.6384 ms). The 750 us poll guard rejects
+     * ambiguous producer movement before a whole ring can pass unnoticed.
+     * Scratch r0/r1/r3, preserve the DMA wait counter (r2) and ring registers. */
     .macro observe_source
     load32 $r0, 0x89020068
     lwi $r0, [$r0]
@@ -107,7 +113,6 @@ SOFTWARE.
     slt $r3, $r0, $r3
     beqz $r3, source_overrun
     .endm
-    .endif
 _start:
     load32 $fp, MAILBOX
     mfsr $r0, $psw
@@ -119,12 +124,10 @@ _start:
     load32 $r1, RESPONSE_XOR
     xor $r0, $r0, $r1
     swi $r0, [$fp + 8]
-    .ifdef IQ_CAPTURE
-    /* Capture variants use the immutable ROM only for PHY power-on. */
+    /* Use the immutable ROM only for PHY power-on. */
     load32 $r2, 0x00837142
     jral5 $r2
     swi $r0, [$fp + 76]
-    .endif
     load32 $r6, 0x54000300
     load32 $r7, RING
     /* ROM handoff disables both directions. Only take an idle engine. */
@@ -149,7 +152,7 @@ clear_headers:
     swi.bi $r0, [$r1], 4
     addi $r2, $r2, -1
     bnez $r2, clear_headers
-    /* Pattern is challenge-specific. First/last payload words change per packet. */
+    /* Initialize each event header with this acquisition's nonce. */
     load32 $r8, HEADERS
     load32 $r9, PAYLOAD
     movi $r10, RING_COUNT
@@ -160,27 +163,10 @@ initialize_slot:
     swi $r0, [$r8 + 24]
     movi $r0, 0xed
     swi $r0, [$r8 + 28]
-    .ifdef IQ_CAPTURE
     movi $r0, 0xf5
-    .else
-    movi $r0, 0xf4
-    .endif
     swi $r0, [$r8 + 32]
     lwi $r0, [$fp + 4]
     swi $r0, [$r8 + 40]
-    .ifndef IQ_CAPTURE
-    load32 $r1, 0xa5a50000
-    xor $r0, $r0, $r1
-    addi $r1, $r9, 0
-    movi $r2, (PAYLOAD_BYTES / 4)
-fill_payload:
-    swi.bi $r0, [$r1], 4
-    addi $r0, $r0, 1
-    addi $r2, $r2, -1
-    bnez $r2, fill_payload
-    movi $r0, 0
-    swi $r0, [$r1]       /* USB trailer, inside our allocation */
-    .endif
     addi $r8, $r8, 64
     addi $r9, $r9, SLOT_STRIDE
     addi $r10, $r10, -1
@@ -204,6 +190,7 @@ fill_payload:
     dsb
     movi $r4, 0          /* sequence */
     movi $r5, 0          /* producer index */
+    swi $r4, [$fp + 108]
     load32 $r2, 100000000
 wait_go:
     lwi $r0, [$fp + 60]
@@ -215,53 +202,32 @@ wait_go:
     movi $r0, 5
     j finish
 begin_stream:
-    .ifdef IQ_SNAPSHOT
-    /* A finite snapshot cannot read beyond its 256 KiB allocation. */
-    movi $r0, 32
-    swi $r0, [$fp + 32]
-    .endif
     load32 $r0, 0x89020068
     lwi $r0, [$r0]
     swi $r0, [$fp + 56]
-    .ifdef IQ_STREAM
+    movi $r1, 0
+    swi $r1, [$fp + 104]
+    swi $r1, [$fp + 80]
+    swi $r1, [$fp + 84]
+restart_capture:
+    /* Reset only ICAP's capture cursor, after all DMA readers have drained. */
+    load32 $r0, 0x80021090
+    movi $r1, 0x4f1
+    swi $r1, [$r0]
+    dsb
+    swi $r4, [$fp + 100]
+    load32 $r0, 0x89020068
+    lwi $r0, [$r0]
     swi $r0, [$fp + 88]
     movi $r0, 0
     swi $r0, [$fp + 64]  /* produced address units, modulo 2^32 */
     swi $r0, [$fp + 72]  /* last 16-bit producer index */
     swi $r0, [$fp + 92]  /* completed address units, modulo 2^32 */
-    swi $r0, [$fp + 80]
-    swi $r0, [$fp + 84]
     load32 $r0, 0x80021090
     movi $r1, 0x24f3
+    movi $r3, 1
+    swi $r3, [$fp + 108]
     swi $r1, [$r0]
-    .endif
-    .ifdef IQ_SNAPSHOT
-    load32 $r0, 0x80021090
-    movi $r1, 0x4f3
-    swi $r1, [$r0]
-    load32 $r2, 1000000
-snapshot_wait:
-    lwi $r1, [$r0]
-    andi $r1, $r1, 2
-    beqz $r1, snapshot_ready
-    addi $r2, $r2, -1
-    bnez $r2, snapshot_wait
-    movi $r1, 0x4f1
-    swi $r1, [$r0]
-    movi $r0, 7
-    j finish
-snapshot_ready:
-    load32 $r0, 0x89020068
-    lwi $r0, [$r0]
-    lwi $r1, [$fp + 56]
-    sub $r0, $r0, $r1
-    swi $r0, [$fp + 64]
-    load32 $r0, 0x80021090
-    lwi $r1, [$r0]
-    swi $r1, [$fp + 68]
-    lwi $r1, [$r0 + 36]
-    swi $r1, [$fp + 72]
-    .endif
 publish:
     lwi $r0, [$fp + 36]
     bnez $r0, stopped
@@ -269,8 +235,7 @@ publish:
     beqz $r0, next_packet
     beq $r4, $r0, done
 next_packet:
-    /* Keep one ring slot empty to distinguish full from empty. Hardware can
-     * consume up to three descriptors between observations without ambiguity. */
+    /* Wait for the preceding SRAM descriptor before publishing the next one. */
     addi $r10, $r5, 1
     andi $r10, $r10, (RING_COUNT - 1)
     load32 $r2, 100000000
@@ -280,19 +245,15 @@ wait_space:
     andi $r1, $r1, (RING_COUNT - 1)
     sub $r1, $r4, $r1
     swi $r1, [$fp + 44]
-    .ifdef IQ_STREAM
+    lwi $r0, [$fp + 100]
+    sub $r1, $r1, $r0
     slli $r1, $r1, 11
     swi $r1, [$fp + 92]
     observe_source
     lwi $r0, [$r6 + 12]
-    .endif
-    .ifdef IQ_CAPTURE
     /* SRAM reads require serial descriptors on this part. Multiple queued
      * SRAM packets have reproduced silent payload corruption. */
     beq $r0, $r5, space_ready
-    .else
-    bne $r0, $r10, space_ready
-    .endif
     lwi $r0, [$fp + 36]
     bnez $r0, stopped
     addi $r2, $r2, -1
@@ -300,8 +261,9 @@ wait_space:
     movi $r0, 4
     j finish
 space_ready:
-    .ifdef IQ_STREAM
-    slli $r1, $r4, 11
+    lwi $r1, [$fp + 100]
+    sub $r1, $r4, $r1
+    slli $r1, $r1, 11
     swi $r1, [$fp + 92]
     load32 $r2, 1000000
 wait_source:
@@ -315,32 +277,29 @@ wait_source:
     movi $r10, 10
     j drain
 source_ready:
-    .endif
     slli $r0, $r5, 6
     load32 $r8, HEADERS
     add $r8, $r8, $r0
-    .ifdef IQ_CAPTURE
+    /* A slot previously used for a gap must become an ordinary data header. */
+    load32 $r0, (0x3800002c + PAYLOAD_BYTES)
+    swi $r0, [$r8]
+    load32 $r0, (0x38000014 + PAYLOAD_BYTES)
+    swi $r0, [$r8 + 24]
+    movi $r0, 0xf5
+    swi $r0, [$r8 + 32]
+    movi $r0, 0
+    swi $r0, [$r8 + 8]
+    swi $r0, [$r8 + 12]
     /* Direct DMA from SRAM: no CPU copying or sample conversion.
      * USB consumes four extra trailer bytes, discarded by the host. The
      * last packet reads these from the adjacent, mapped SRAM word. */
-    andi $r0, $r4, 31
+    lwi $r0, [$fp + 100]
+    sub $r0, $r4, $r0
+    andi $r0, $r0, 31
     slli $r0, $r0, 13
     load32 $r9, 0xe0200000
     add $r9, $r9, $r0
-    .else
-    /* SLOT_STRIDE=0x3000; calculate without a runtime multiply helper. */
-    slli $r0, $r5, 12
-    slli $r1, $r5, 13
-    add $r0, $r0, $r1
-    load32 $r9, PAYLOAD
-    add $r9, $r9, $r0
-    .endif
     swi $r4, [$r8 + 36]
-    .ifndef IQ_CAPTURE
-    swi $r4, [$r9 + 0]
-    nor $r0, $r4, $r4
-    swi $r0, [$r9 + (PAYLOAD_BYTES - 4)]
-    .endif
     slli $r0, $r5, 4
     add $r0, $r7, $r0
     swi $r8, [$r0]
@@ -361,10 +320,17 @@ done:
 stopped:
     movi $r10, 3
 drain:
-    /* Drain before disabling the capture SRAM path. A detected overrun is
-     * always a failed stream, including any final descriptor being drained. */
+    /* Drain before disabling SRAM. The final source packet is untrusted after
+     * a source fault, so the ordered marker tells the host to discard it. */
     load32 $r2, 100000000
 wait_dma:
+    /* A normal STOP must still detect overwrite of its final descriptor. */
+    lwi $r0, [$fp + 108]
+    beqz $r0, drain_fault
+    slti $r0, $r10, 8
+    beqz $r0, drain_fault
+    observe_source
+drain_fault:
     lwi $r0, [$r6 + 12]
     beq $r0, $r5, completed
     addi $r2, $r2, -1
@@ -373,13 +339,76 @@ wait_dma:
     j finish
 completed:
     swi $r4, [$fp + 44]
+    slti $r0, $r10, 8
+    bnez $r0, terminal
+    slti $r0, $r10, 10
+    beqz $r0, terminal
+    lwi $r0, [$fp + 96]
+    beqz $r0, terminal
+    lwi $r0, [$fp + 32]
+    bnez $r0, terminal
+    lwi $r0, [$r6 - 496]
+    bnez $r0, terminal
+    j recover_source
+terminal:
     addi $r0, $r10, 0
     j finish
+recover_source:
+    /* The RF chain stays configured. Stop only the SRAM writer, and keep it
+     * stopped until the ordered gap marker has left the device DMA engine. */
+    load32 $r0, 0x80021090
+    movi $r1, 0x4f0
+    swi $r1, [$r0]
+    movi $r1, 0
+    swi $r1, [$fp + 108]
+    dsb
+    slli $r0, $r5, 6
+    load32 $r8, HEADERS
+    add $r8, $r8, $r0
+    load32 $r0, 0x3800002c
+    swi $r0, [$r8]
+    swi $r10, [$r8 + 8]
+    lwi $r0, [$fp + 104]
+    addi $r0, $r0, 1
+    swi $r0, [$fp + 104]
+    swi $r0, [$r8 + 12]
+    load32 $r0, 0x38000014
+    swi $r0, [$r8 + 24]
+    movi $r0, 0xf6
+    swi $r0, [$r8 + 32]
+    swi $r4, [$r8 + 36]
+    /* Both marker fragments are in MCU data RAM, not the stopped SRAM path. */
+    slli $r0, $r5, 4
+    add $r0, $r7, $r0
+    swi $r8, [$r0]
+    addi $r1, $r8, 44
+    swi $r1, [$r0 + 8]
+    movi $r1, 0
+    swi $r1, [$r0 + 12]
+    load32 $r1, ((44 << 16) | (1 << 14) | 4)
+    swi $r1, [$r0 + 4]
+    dsb
+    addi $r5, $r5, 1
+    andi $r5, $r5, (RING_COUNT - 1)
+    swi $r5, [$r6 + 8]
+    load32 $r2, 100000000
+wait_marker:
+    lwi $r0, [$r6 + 12]
+    beq $r0, $r5, marker_complete
+    addi $r2, $r2, -1
+    bnez $r2, wait_marker
+    movi $r0, 4
+    j finish
+marker_complete:
+    lwi $r0, [$r6 - 496]
+    bnez $r0, terminal
+    lwi $r0, [$fp + 36]
+    bnez $r0, stopped
+    j restart_capture
 initial_busy:
     movi $r0, 6
 finish:
     addi $r10, $r0, 0
-    .ifdef IQ_STREAM
     load32 $r0, 0x80021090
     movi $r1, 0x4f0
     swi $r1, [$r0]
@@ -393,7 +422,6 @@ finish:
     lwi $r2, [$fp + 64]
     add $r1, $r1, $r2
     swi $r1, [$fp + 64]
-    .endif
     load32 $r0, 0x89020068
     lwi $r0, [$r0]
     lwi $r1, [$fp + 56]
@@ -406,13 +434,11 @@ finish:
     dsb
 park:
     j park
-    .ifdef IQ_STREAM
 timing_fault:
     movi $r10, 8
     j drain
 source_overrun:
     movi $r10, 9
     j drain
-    .endif
     .size _start, .-_start
 

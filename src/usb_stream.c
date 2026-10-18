@@ -11,6 +11,7 @@ struct transfer_slot {
     struct bs_reader *reader;
     struct libusb_transfer *transfer;
     bool pending;
+    struct transfer_slot *next;
 };
 
 struct bs_reader {
@@ -18,10 +19,11 @@ struct bs_reader {
     pthread_mutex_t mutex;
     pthread_cond_t ready;
     pthread_t thread;
-    bool started, stopping;
+    bool started, stopping, backpressure;
     int error;
     unsigned depth, inflight, capacity, head, tail, count;
     struct transfer_slot *slots;
+    struct transfer_slot *held_head, *held_tail;
     uint8_t *queue;
     unsigned *lengths;
 };
@@ -39,10 +41,41 @@ static void cancel_transfers(struct bs_reader *reader)
             libusb_cancel_transfer(reader->slots[i].transfer);
 }
 
+/* Preserve a completed transfer before reusing its buffer. The queue lock
+ * protects both byte order and ownership, including parked completions.
+ */
+static void queue_transfer(struct bs_reader *reader, struct libusb_transfer *transfer)
+{
+    size_t length = (size_t)transfer->actual_length;
+    memcpy(reader->queue + (size_t)reader->tail * BS_USB_BYTES, transfer->buffer, length);
+    reader->lengths[reader->tail] = (unsigned)length;
+    reader->tail = (reader->tail + 1) % reader->capacity;
+    ++reader->count;
+}
+
+/* Submit only after completed bytes have a stable queue slot. Submission
+ * failure leaves ownership with us and is still a real transport error.
+ */
+static void submit_slot(struct transfer_slot *slot)
+{
+    struct bs_reader *reader = slot->reader;
+    int result = libusb_submit_transfer(slot->transfer);
+    if (result < 0)
+        reader->error = bs_usb_error(result);
+    else {
+        slot->pending = true;
+        ++reader->inflight;
+    }
+}
+
 /* Completion callbacks only copy USB bytes into a bounded queue and re-submit.
  * RF control and application callbacks run outside libusb callbacks instead,
  * avoiding libusb event-lock recursion and preventing Python-style scheduling
- * gaps between individual USB reads. A full queue is an explicit error.
+ * gaps between individual USB reads. Strict reads fail on a full queue. With
+ * local recovery enabled, park completed transfers in arrival order instead.
+ * Their buffers remain owned and unchanged until the consumer frees capacity.
+ * Stopping resubmission propagates backpressure to the device, whose ordered
+ * gap marker then describes lost source samples without losing framing here.
  */
 static void LIBUSB_CALL receive_transfer(struct libusb_transfer *transfer)
 {
@@ -51,33 +84,51 @@ static void LIBUSB_CALL receive_transfer(struct libusb_transfer *transfer)
     pthread_mutex_lock(&reader->mutex);
     slot->pending = false;
     --reader->inflight;
+    bool held = false;
     if (!reader->stopping && !reader->error) {
         if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
             reader->error = transfer->status == LIBUSB_TRANSFER_NO_DEVICE ?
                 BIRRIASDR_ERROR_NO_DEVICE : BIRRIASDR_ERROR_IO;
         } else if (transfer->actual_length > 0) {
-            if (reader->count == reader->capacity) {
-                reader->error = BIRRIASDR_ERROR_OVERRUN;
+            if (reader->held_head || reader->count == reader->capacity) {
+                if (reader->backpressure) {
+                    slot->next = NULL;
+                    if (reader->held_tail)
+                        reader->held_tail->next = slot;
+                    else
+                        reader->held_head = slot;
+                    reader->held_tail = slot;
+                    held = true;
+                } else {
+                    reader->error = BIRRIASDR_ERROR_OVERRUN;
+                }
             } else {
-                size_t length = (size_t)transfer->actual_length;
-                memcpy(reader->queue + (size_t)reader->tail * BS_USB_BYTES, transfer->buffer, length);
-                reader->lengths[reader->tail] = (unsigned)length;
-                reader->tail = (reader->tail + 1) % reader->capacity;
-                ++reader->count;
+                queue_transfer(reader, transfer);
             }
         }
-        if (!reader->error) {
-            int result = libusb_submit_transfer(transfer);
-            if (result < 0)
-                reader->error = bs_usb_error(result);
-            else {
-                slot->pending = true;
-                ++reader->inflight;
-            }
-        }
+        if (!reader->error && !held)
+            submit_slot(slot);
     }
     pthread_cond_broadcast(&reader->ready);
     pthread_mutex_unlock(&reader->mutex);
+}
+
+/* Resume oldest completions first, without allocating or discarding bytes.
+ * The total bound stays queue capacity plus the already allocated transfers.
+ * Call with the queue lock held, from the event pump or the consuming thread.
+ */
+static void resume_transfers(struct bs_reader *reader)
+{
+    while (!reader->stopping && !reader->error && reader->held_head &&
+           reader->count < reader->capacity) {
+        struct transfer_slot *slot = reader->held_head;
+        reader->held_head = slot->next;
+        if (!reader->held_head)
+            reader->held_tail = NULL;
+        slot->next = NULL;
+        queue_transfer(reader, slot->transfer);
+        submit_slot(slot);
+    }
 }
 
 /* One event thread belongs to one handle/context. It keeps processing events
@@ -91,6 +142,7 @@ static void *pump_events(void *context)
         int result;
         struct timeval timeout = {0, 10000};
         pthread_mutex_lock(&reader->mutex);
+        resume_transfers(reader);
         if (reader->error)
             cancel_transfers(reader);
         done = reader->stopping && reader->inflight == 0;
@@ -118,6 +170,8 @@ int bs_reader_create(birriasdr_dev_t *dev, unsigned depth, struct bs_reader **ou
     if (!reader)
         return BIRRIASDR_ERROR_NO_MEMORY;
     reader->dev = dev;
+    reader->backpressure = dev->stream_continuous && dev->recovery_limit &&
+                           dev->recovery_callback;
     reader->depth = depth;
     reader->capacity = depth < 64 ? depth * 8 : 512;
     if (pthread_mutex_init(&reader->mutex, NULL)) {
@@ -213,6 +267,7 @@ int bs_reader_take(struct bs_reader *reader, uint8_t *data, size_t *length, unsi
         memcpy(data, reader->queue + (size_t)reader->head * BS_USB_BYTES, *length);
         reader->head = (reader->head + 1) % reader->capacity;
         --reader->count;
+        resume_transfers(reader);
     }
     pthread_mutex_unlock(&reader->mutex);
     return result;

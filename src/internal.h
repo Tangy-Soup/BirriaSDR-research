@@ -69,6 +69,8 @@ struct birriasdr_dev {
      */
     pthread_mutex_t control_mutex;
     bool control_ready;
+    /* Immutable while a reader owns the handle; enables lossless USB backpressure. */
+    bool stream_continuous;
     int control_error;
     enum birriasdr_stage control_error_stage;
     birriasdr_recovery_cb_t recovery_callback;
@@ -93,13 +95,16 @@ struct birriasdr_dev {
 };
 
 typedef int (*bs_payload_fn)(void *context, const uint8_t *payload);
+typedef int (*bs_gap_fn)(void *context, uint32_t state, uint64_t packets);
 struct bs_framer {
     uint8_t pending[BS_FRAME_BYTES];
     size_t used;
     uint32_t nonce;
+    uint32_t gaps;
     uint64_t packets;
     unsigned acknowledgements;
     bs_payload_fn payload;
+    bs_gap_fn gap;
     void *context;
 };
 

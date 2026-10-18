@@ -134,7 +134,7 @@ static int configure_dma(birriasdr_dev_t *dev)
 static int rom_command(birriasdr_dev_t *dev, uint8_t command,
                         const uint8_t *payload, size_t size, int *status)
 {
-    uint8_t frame[1200] = {0}, reply[4096];
+    uint8_t frame[sizeof(mt7921_image) + 80] = {0}, reply[4096];
     bool scatter = command == 0xee;
     size_t body = size + (scatter ? 0 : 64);
     size_t total = ((body + 4 + 3) & ~(size_t)3) + 4;
@@ -213,10 +213,17 @@ static int initialize_mailbox(birriasdr_dev_t *dev, uint32_t packets)
         if (actual != expected)
             return BIRRIASDR_ERROR_STATE;
     }
+    /* Source recovery is opt-in and never joins gaps in a finite capture. */
+    uint32_t recover = !packets && dev->recovery_limit && dev->recovery_callback;
+    uint32_t actual;
+    BS_TRY(bs_write32(dev, BS_MMIO, MT_MAILBOX + 96, recover));
+    BS_TRY(bs_read32(dev, BS_MMIO, MT_MAILBOX + 96, &actual));
+    if (actual != recover)
+        return BIRRIASDR_ERROR_STATE;
     return 0;
 }
 
-/* Transfer our 1120-byte image through ROM's PDA engine, including its generated
+/* Transfer our original image through ROM's PDA engine, including its generated
  * alignment/checksum trailer. Execution is proven by the nonce response, not
  * merely by accepting a start command. The device calls immutable ROM PHY power-on.
  */
@@ -295,7 +302,8 @@ static int prepare_once(birriasdr_dev_t *dev, uint32_t packets)
  * Never retry an individual ROM command: a failed transfer may have partially
  * executed. A new attempt checks patch state and boots with a fresh nonce.
  *
- * Failed streams request the stronger transport reset on the next prepare.
+ * Failed streams may request the stronger transport reset on the next prepare.
+ * A drained source overflow with successful cleanup first tries ordinary boot.
  * A lost/changed USB handle, retained vendor patch, calibration rejection or
  * unsupported hardware is reported directly. This does not replace cold power
  * removal when a stock ROM patch was loaded before our library acquired USB.

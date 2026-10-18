@@ -90,7 +90,9 @@ enum birriasdr_stage {
  * samples were already delivered. firmware_state 9 means the ICAP ring overran.
  * An automatically recovered read can return zero despite notified gaps.
  * Samples/packets/bytes accumulate across attempts; the remaining fields describe
- * the final attempt. Each recovery event preserves the preceding attempt's stats.
+ * the final attempt. Each recovery event snapshots the current acquisition.
+ * Packets count received data events, including the final packet discarded at
+ * a device gap, so packets times payload size can exceed delivered samples.
  */
 struct birriasdr_stream_stats {
     uint64_t samples;
@@ -115,22 +117,24 @@ struct birriasdr_stream_stats {
 typedef void (*birriasdr_read_async_cb_t)(const int16_t *iq, uint32_t count,
                                         uint64_t first_sample, void *context);
 
-/** Notification before an automatic restart. The failed attempt has ended and
- * its transfers have been drained. New samples, if startup succeeds, follow
- * this event and are NOT continuous with the preceding samples. The number of
- * missing samples is unknown; no zeros or invented timestamps are inserted.
+/** Notification at a source gap or before a full acquisition restart.
+ * A local source gap keeps firmware, USB and receiver settings running. A full
+ * restart drains the preceding acquisition first. Fresh samples follow this
+ * event and are NOT continuous with preceding samples. The number of missing
+ * samples is unknown; no zeros or invented timestamps are inserted.
  */
 struct birriasdr_recovery_event {
     uint64_t next_sample; /**< Total samples delivered in this read; not elapsed RF time. */
-    uint32_t attempt;     /**< Restart number, starting at one for each read_async call. */
-    int error;           /**< Error that caused this restart. */
-    struct birriasdr_stream_stats previous; /**< Statistics of the failed attempt only. */
+    uint32_t attempt;     /**< Recovery number starting at one, saturating at UINT32_MAX. */
+    int error;           /**< Error that caused this discontinuity. */
+    struct birriasdr_stream_stats previous; /**< Acquisition snapshot at the gap, with its fault state. */
 };
 
 /** Called on the read thread, with no library lock held and no samples in flight
  * to application callbacks. May call cancel_async or getters allowed during a
- * read. Setters return BUSY until the next acquisition is ready. A notification
- * announces an attempt, not successful recovery; read_async reports final failure.
+ * read. Live setters are also allowed, but return BUSY during full restart or
+ * cancellation. A local gap retains the live control window. A notification
+ * is not a guarantee of further samples; read_async reports final failure.
  */
 typedef void (*birriasdr_recovery_cb_t)(const struct birriasdr_recovery_event *event,
                                       void *context);
@@ -264,12 +268,24 @@ int birriasdr_set_calibration(birriasdr_dev_t *dev, const void *data, size_t len
 int birriasdr_reset_buffer(birriasdr_dev_t *dev);
 
 /** Enable automatic recovery for read_async; configure only while idle.
- * max_restarts is the total restart budget per read call; nonzero requires a
- * callback so discontinuities cannot be hidden. Zero disables recovery (default).
+ * max_restarts is the device/transport fault budget per read call. A nonzero
+ * budget requires a callback so discontinuities cannot be hidden. Zero disables
+ * recovery and removes the callback (default).
  * Overruns, transient transport errors and failed live configuration updates
  * restart with the last committed settings. Explicit cancellation always wins.
+ * With recovery enabled, clean device/host queue overruns report gaps and keep
+ * restarting without spending this budget. An overrun with a failed reset,
+ * DMA error or live-control failure still spends a bounded retry. The attempt
+ * counter includes all recovery notifications, including clean overruns.
+ * The MT7921 firmware recovers source overruns without reloading, resetting USB
+ * or reapplying RF settings. The host retains one raw packet until the next
+ * data event or clean terminal state confirms it. A gap discards that packet
+ * and flushes the validated prefix before notifying, so buffers never span gaps.
+ * A full host queue pauses resubmission and preserves completed USB bytes in
+ * existing transfer buffers. The resulting device backpressure may cause a
+ * notified source gap, but does not discard host framing or grow the queue.
  * Device removal, permissions, retained vendor patches and invalid/unsupported
- * requests are not retried. Exhaustion returns the last capture error.
+ * requests are not retried. Fault-budget exhaustion returns the last capture error.
  * Finite read_sync calls remain strict and never splice separate acquisitions.
  */
 int birriasdr_set_recovery(birriasdr_dev_t *dev, uint32_t max_restarts,
@@ -293,6 +309,7 @@ int birriasdr_read_sync(birriasdr_dev_t *dev, int16_t *iq, uint32_t count,
  * packets before returning; callbacks can still arrive after cancellation.
  * Returns 0 for a clean cancel, otherwise a negative error. Recovery is opt-in
  * through set_recovery and always reports a gap before another acquisition.
+ * With recovery enabled, cancellation at a clean overrun also returns 0.
  * first_sample remains a cumulative delivered count across those gaps, not an
  * RF timestamp. Final statistics accumulate samples/packets/bytes over attempts;
  * firmware state, stage, DMA and reset errors describe the final attempt.

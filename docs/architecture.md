@@ -76,7 +76,8 @@ acquisition and preserves the error along with its RF or gain stage. Frequency
 metadata is committed atomically, and only after a successful retune. Getters
 do not attribute that metadata to older queued samples. The USB event thread
 never calls application code or performs RF configuration. Its bounded queue
-makes overload by the host consumer explicit. The design uses the
+either preserves completed bytes under backpressure or reports overload for
+strict readers. The design uses the
 [libusb synchronous and event APIs](https://libusb.sourceforge.io/api-1.0/libusb_mtasync.html),
 which coordinate their own event handling across threads. Cancellation drains
 all submitted transfers before their memory is freed, as the
@@ -95,19 +96,39 @@ named functions.
 
 ## Recovery ownership
 
-When restarts are enabled, the recovery callback becomes mandatory, because the
-library must never silently join separate acquisitions. The common stream layer
-owns a bounded restart budget, the cumulative delivered offsets and gap
-notification. Each acquisition still creates a fresh parser and reader, checks a
-fresh firmware nonce, and retires every asynchronous transfer before resetting
-hardware. The handle stays busy through cleanup, callbacks, backoff and startup.
-A gap callback runs without the control mutex held and can cancel recovery.
+When recovery is enabled, a gap callback is mandatory. The stream layer owns
+cumulative delivered offsets and a bounded budget for device or transport faults.
+Clean overruns neither spend nor replenish that budget. An overrun accompanied
+by a reset, DMA or live-control failure still uses a bounded retry. Notification
+numbers include all recoveries and saturate at the largest 32-bit value.
+
+The device can recover source overruns without a new acquisition. It drains the
+outstanding SRAM descriptor, stops capture, sends a gap marker from MCU memory,
+waits for that marker to drain, and restarts capture at offset zero. Firmware,
+USB, nonce, packet sequence and receiver settings stay live. The host retains
+one raw packet until the next data event or a clean terminal status confirms
+it. A marker discards that potentially overwritten packet and flushes the valid
+prefix before the callback, so an application buffer never spans a gap.
+
+The bounded USB queue preserves completed transfers when it fills. Completed
+buffers are parked in arrival order and resubmitted only after their bytes have
+been queued. Storage is bounded by the existing queue plus the allocated
+transfers. Backpressure can overrun device SRAM, which is reported by the ordered
+gap marker. Strict readers still fail on a full host queue.
+
+A full restart creates a fresh parser and reader, checks a fresh firmware nonce,
+and retires every asynchronous transfer before resetting hardware. The handle
+stays busy through cleanup, callbacks, backoff and startup. Every gap callback
+runs without the control mutex held and can cancel. Live setters remain usable
+at a device-local gap but return busy during a full restart.
 
 Separately, the chipset boot layer retries a transient preparation failure once,
 before any reads are submitted or GO is released. It can repair the USB
 transport with `libusb_reset_device` and then rerun the complete boot, RF, gain
 and filter sequence. It never replays a partially transmitted command on its
-own. A failed acquisition requests this stronger reset for its next prepare.
+own. Transport failures request this stronger reset for the next preparation.
+A drained source overrun with successful cleanup first tries ordinary startup
+without resetting USB enumeration.
 Before sending new ROM commands, the transport layer drains stale bulk input
 within both time and byte budgets. It never clears halts on healthy endpoints,
 because doing so broke the tested board.
@@ -159,7 +180,13 @@ cancellation inside the gap callback, failed rollback, fatal errors, stale
 handles and preservation of the original control error when STOP also fails.
 Separate tests exercise the real boot retry logic with a mocked transport, and
 terminal packet accounting across the firmware's 32-bit counter wrap without
-waiting for a multi-day capture.
+waiting for a multi-day capture. Gap tests cover fragmented markers, stale
+nonces, counter wrap, malformed events, and rejection by strict readers. Stream
+tests feed deliberately corrupted final packets before markers and verify their
+discard, callback boundaries, cancellation, and multiple gaps without another
+boot or reader. Queue tests cover parked-transfer ordering, teardown and failed
+resubmission. Mixed-fault tests keep the bounded retry budget separate from
+clean overruns.
 
 The `test_hardware --run` command is an explicit physical-device test that is
 not registered with CTest. It resets the dongle and exercises finite reads,

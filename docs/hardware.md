@@ -41,9 +41,10 @@ Stream checks detect missing, repeated, stale or malformed packets as well as
 device faults. Samples that were already delivered do not make a failed capture
 complete. Overruns are reported instead of being hidden by dropping or inventing
 samples. An application can enable automatic recovery for asynchronous reads by
-providing a restart budget and a mandatory gap callback. Recovery reapplies the
-last committed settings, but it cannot bring back lost samples. Finite reads
-remain strict.
+providing a fault-restart budget and a mandatory gap callback. Source overruns
+can recover inside the device with frequency and gain intact; clean overruns do
+not consume the fault budget. Full restarts reapply the last committed settings.
+Recovery cannot bring back lost samples, and finite reads remain strict.
 
 Recognizing a chip does not mean its receiver is supported. Unknown controls
 return unsupported, and board qualification is separate from USB

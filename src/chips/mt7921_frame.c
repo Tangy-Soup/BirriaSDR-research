@@ -20,6 +20,12 @@
  *       40     4  Fresh boot nonce.
  *       44  8192  2,048 raw complex samples, Q16 followed by I16.
  *     8236     4  USB trailer, outside both the RXD0 length and I/Q payload.
+ * An opted-in recovering read also accepts a 48-byte gap event. Its length
+ * words are 0x3800002c/0x38000014 and extended ID is 0xf6. Header offsets 8/12
+ * contain source fault 8 or 9 and a monotonically increasing gap count. The
+ * sequence is the NEXT data packet's sequence, not another payload. A marker
+ * invalidates the preceding data packet, which the stream layer holds back.
+ * The nonce and both counters remain continuous across an in-device recovery.
  * The remaining header fields are not interpreted here. The trailer may be a
  * neighboring SRAM word: ignore its contents and never deliver it as a sample.
  * One 40-byte ROM start ACK (event ID 1, status zero) is accepted; duplicate
@@ -57,10 +63,23 @@ static int consume_frame(struct bs_framer *framer, size_t length)
             return BIRRIASDR_ERROR_PROTOCOL;
         return 0;
     }
-    if (frame[28] != 0xed || frame[32] != 0xf5 ||
-        bs_get_le32(frame + 24) != 0x38000014u + BS_PAYLOAD_BYTES ||
+    if (frame[28] != 0xed ||
         bs_get_le32(frame + 36) != (uint32_t)framer->packets ||
         bs_get_le32(frame + 40) != framer->nonce)
+        return BIRRIASDR_ERROR_PROTOCOL;
+    if (length == 48) {
+        uint32_t state = bs_get_le32(frame + 8);
+        if (!framer->gap || frame[32] != 0xf6 ||
+            bs_get_le32(frame + 24) != 0x38000014u ||
+            (state != 8 && state != 9) ||
+            bs_get_le32(frame + 12) != (uint32_t)(framer->gaps + 1u))
+            return BIRRIASDR_ERROR_PROTOCOL;
+        BS_TRY(framer->gap(framer->context, state, framer->packets));
+        ++framer->gaps;
+        return 0;
+    }
+    if (frame[32] != 0xf5 ||
+        bs_get_le32(frame + 24) != 0x38000014u + BS_PAYLOAD_BYTES)
         return BIRRIASDR_ERROR_PROTOCOL;
     BS_TRY(framer->payload(framer->context, frame + 44));
     ++framer->packets;
@@ -78,7 +97,7 @@ int bs_framer_feed(struct bs_framer *framer, const uint8_t *data, size_t length)
         if (framer->used >= 4) {
             uint32_t word = bs_get_le32(framer->pending);
             uint32_t size = word & 0xffff;
-            if (word >> 27 != 7 || (size != 36 && size != BS_FRAME_BYTES - 4))
+            if (word >> 27 != 7 || (size != 36 && size != 44 && size != BS_FRAME_BYTES - 4))
                 return BIRRIASDR_ERROR_PROTOCOL;
             target = size + 4;
         }

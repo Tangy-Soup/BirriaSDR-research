@@ -39,7 +39,7 @@ flowchart LR
 
 The host programs the radio front end and the capture engine directly through
 their registers. The capture engine writes samples into the chip's internal
-memory. A small original device program, only 1,120 bytes and loaded through the
+memory. A small original device program, only 1,632 bytes and loaded through the
 chip's built-in boot ROM, sends that memory to the host over USB. The library
 then checks the stream and hands complex samples to the application.
 
@@ -85,7 +85,7 @@ For more detail, see:
 | Reference clock | On-board 40 MHz crystal |
 | Host interface | Bulk transfers over USB 3.0 at about 161 MB/s |
 | Output format | Interleaved signed 16-bit I and Q (`cs16`). Buffers from the API are native-endian, and recorder files are little-endian |
-| Firmware | Original 1,120-byte RAM program. No vendor firmware and nothing flashed |
+| Firmware | Original 1,632-byte RAM program. No vendor firmware and nothing flashed |
 | Host platforms | Linux, tested on a Raspberry Pi 5, and macOS, tested on an Apple Silicon Mac |
 
 ## Proof of concept
@@ -215,15 +215,20 @@ if (result == 0)
     result = birriasdr_read_async(dev, on_samples, context, 0, 0);
 ```
 
-With this budget, the library restarts up to three times within that read call.
-Each notification arrives after the failed capture has been cleaned up and
-before any resumed samples. The event describes the failure, includes
-diagnostics, and gives `next_sample`, the running count of delivered samples at
-which the gap occurs. The library cannot tell how many samples were lost. Reset
-any processing that depends on continuity. A successful return after recovery
-does not mean the whole recording was gapless.
+This budget permits up to three full restarts for device or transport faults.
+Clean overruns do not consume it. The device can recover a source overrun by
+restarting capture without reloading firmware or changing frequency and gain.
+The host preserves completed USB transfers when its queue fills; this may
+cause a device-side overrun, but it does not discard framing bytes.
 
-Recovery reapplies the last frequency and gain that were set successfully. A
+Each gap notification precedes resumed samples. The event describes the failure,
+includes diagnostics, and gives `next_sample`, the running count of delivered
+samples at which the gap occurs. The library holds back one packet so an overrun
+marker can discard potentially overwritten data before it reaches the application.
+The number of lost samples is unknown. Reset processing that depends on
+continuity; a successful return after recovery does not mean a gapless recording.
+
+A full recovery reapplies the last frequency and gain that were set successfully. A
 setter that fails still returns its error to its own caller. Cancelling
 explicitly prevents any further restart. When the USB connection needs repair,
 the library uses a software USB reset. It never switches hub power or downloads

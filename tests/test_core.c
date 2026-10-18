@@ -68,6 +68,66 @@ static void test_framing(void)
     }
 }
 
+struct gap_observation { unsigned count; uint32_t state; uint64_t packets; };
+
+/* Markers carry no samples and must precede the next packet at this sequence. */
+static int observe_gap(void *context, uint32_t state, uint64_t packets)
+{
+    struct gap_observation *o = context;
+    ++o->count;
+    o->state = state;
+    o->packets = packets;
+    return 0;
+}
+
+/* Exercise every marker split, strict readers, duplicates, missing markers,
+ * invalid reasons and both wrapping counters. A marker never advances the
+ * data packet count or bypasses the acquisition nonce check.
+ */
+static void test_gap_events(void)
+{
+    uint8_t marker[48] = {0};
+    bs_put_le32(marker, 0x3800002c);
+    bs_put_le32(marker + 8, 9);
+    bs_put_le32(marker + 12, 1);
+    bs_put_le32(marker + 24, 0x38000014);
+    marker[28] = 0xed;
+    marker[32] = 0xf6;
+    bs_put_le32(marker + 36, 3);
+    bs_put_le32(marker + 40, 0x12345678);
+    for (size_t split = 0; split <= sizeof(marker); ++split) {
+        struct gap_observation o = {0};
+        struct bs_framer f = {.nonce = 0x12345678, .packets = 3,
+                              .gap = observe_gap, .context = &o};
+        CHECK(bs_framer_feed(&f, marker, split) == 0);
+        CHECK(bs_framer_feed(&f, marker + split, sizeof(marker) - split) == 0);
+        CHECK(o.count == 1 && o.state == 9 && o.packets == 3);
+        CHECK(f.packets == 3 && f.gaps == 1 && bs_framer_finish(&f, 3) == 0);
+        CHECK(bs_framer_feed(&f, marker, sizeof(marker)) == BIRRIASDR_ERROR_PROTOCOL);
+    }
+    const unsigned corrupt[] = {8, 12, 24, 28, 32, 36, 40};
+    for (unsigned n = 0; n < sizeof(corrupt) / sizeof(corrupt[0]); ++n) {
+        struct gap_observation o = {0};
+        struct bs_framer f = {.nonce = 0x12345678, .packets = 3,
+                              .gap = observe_gap, .context = &o};
+        marker[corrupt[n]] ^= 2;
+        CHECK(bs_framer_feed(&f, marker, sizeof(marker)) == BIRRIASDR_ERROR_PROTOCOL);
+        CHECK(!o.count);
+        marker[corrupt[n]] ^= 2;
+    }
+    struct bs_framer strict = {.nonce = 0x12345678, .packets = 3};
+    CHECK(bs_framer_feed(&strict, marker, sizeof(marker)) == BIRRIASDR_ERROR_PROTOCOL);
+    struct gap_observation o = {0};
+    struct bs_framer f = {.nonce = 0x12345678, .packets = UINT64_C(1) << 32,
+                          .gaps = UINT32_MAX, .gap = observe_gap, .context = &o};
+    bs_put_le32(marker + 8, 8);
+    bs_put_le32(marker + 12, 0);
+    bs_put_le32(marker + 36, 0);
+    CHECK(bs_framer_feed(&f, marker, sizeof(marker)) == 0);
+    CHECK(o.count == 1 && o.state == 8 && o.packets == (UINT64_C(1) << 32));
+    CHECK(f.gaps == 0);
+}
+
 /* Known signed extrema catch I/Q reversal, sign-extension and accidental scaling. */
 static void test_samples(void)
 {
@@ -128,7 +188,7 @@ static void test_all_sample_values(void)
 static void test_image(void)
 {
     uint32_t state = 0;
-    CHECK(sizeof(mt7921_image) == 1120);
+    CHECK(sizeof(mt7921_image) == 1632);
     for (size_t i = 0; i < sizeof(mt7921_image); i += 4) {
         uint32_t bits = state & 0x10921111, parity = 0;
         while (bits) { parity ^= bits & 1; bits >>= 1; }
@@ -200,6 +260,7 @@ static void test_api(void)
 int main(void)
 {
     test_framing();
+    test_gap_events();
     test_samples();
     test_events();
     test_all_sample_values();
