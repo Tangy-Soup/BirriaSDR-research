@@ -41,6 +41,8 @@ struct bs_backend {
     const struct bs_band *bands; /* NULL means one band, min to max. */
     unsigned band_count;
     uint32_t default_rate;
+    uint32_t default_bandwidth;
+    int (*validate_bandwidth)(uint32_t bandwidth);
     int (*validate)(uint64_t frequency, uint32_t rate, const struct birriasdr_gain *gain);
     int (*identify)(birriasdr_dev_t *);
     int (*prepare)(birriasdr_dev_t *, uint32_t packets);
@@ -85,6 +87,9 @@ struct birriasdr_dev {
     uint32_t recovery_limit;
     atomic_uint_fast64_t frequency;
     uint32_t rate;
+    atomic_uint bandwidth;
+    atomic_uint packet_detect_suppression;
+    atomic_uint receive_chain;
     bool manual;
     struct birriasdr_gain gain;
     uint32_t nonce;
@@ -99,6 +104,10 @@ struct birriasdr_dev {
         bool filter_saved;
         bool high_band;
         bool band_valid;
+        uint32_t detect_baseline;
+        bool detect_saved;
+        uint32_t chain_baseline[3];
+        unsigned chain_saved;
     } mt7921;
     struct birriasdr_stream_stats stats;
 };

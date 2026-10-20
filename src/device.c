@@ -74,6 +74,7 @@ int birriasdr_open(birriasdr_dev_t **out, uint32_t index)
     dev->interface_number = -1;
     atomic_init(&dev->run_state, BS_IDLE);
     atomic_init(&dev->frequency, 0);
+    atomic_init(&dev->bandwidth, 0);
     if (pthread_mutex_init(&dev->control_mutex, NULL)) {
         free(dev);
         return BIRRIASDR_ERROR_NO_MEMORY;
@@ -86,6 +87,9 @@ int birriasdr_open(birriasdr_dev_t **out, uint32_t index)
         free(dev);
         return result;
     }
+    atomic_store(&dev->bandwidth, dev->backend->default_bandwidth);
+    atomic_store(&dev->packet_detect_suppression, 0u);
+    atomic_store(&dev->receive_chain, (unsigned)BIRRIASDR_CHAIN_0);
     *out = dev;
     return 0;
 }
@@ -336,13 +340,70 @@ int birriasdr_set_agc_mode(birriasdr_dev_t *dev, int enabled)
     return unsupported_control(dev);
 }
 
-/* TODO: independently selectable filter widths and calibrated RF response.
- * The current backend applies its fixed matched profile during preparation.
+/* Stage a backend-qualified nominal filter profile; never retime the sample
+ * clock. Keep configuration serialized with stream ownership and live setters.
  */
 int birriasdr_set_tuner_bandwidth(birriasdr_dev_t *dev, uint32_t bandwidth)
 {
-    (void)bandwidth;
-    return unsupported_control(dev);
+    int result;
+    if (!dev) return BIRRIASDR_ERROR_INVALID;
+    pthread_mutex_lock(&dev->control_mutex);
+    result = require_idle(dev);
+    if (!result) {
+        if (!(dev->backend->capabilities & BIRRIASDR_CAP_FILTER) ||
+            !dev->backend->validate_bandwidth)
+            result = BIRRIASDR_ERROR_UNSUPPORTED;
+        else
+            result = dev->backend->validate_bandwidth(bandwidth);
+        if (!result) atomic_store(&dev->bandwidth, bandwidth);
+    }
+    pthread_mutex_unlock(&dev->control_mutex);
+    return result;
+}
+
+uint32_t birriasdr_get_tuner_bandwidth(const birriasdr_dev_t *dev)
+{
+    return dev ? atomic_load(&dev->bandwidth) : 0;
+}
+
+/* Stage an opt-in PHY setting for the next preparation; never a live control. */
+int birriasdr_set_packet_detect_suppression(birriasdr_dev_t *dev, int enabled)
+{
+    int result;
+    if (!dev) return BIRRIASDR_ERROR_INVALID;
+    pthread_mutex_lock(&dev->control_mutex);
+    result = require_idle(dev);
+    if (!result && !(dev->backend->capabilities & BIRRIASDR_CAP_PD_SUPPRESS))
+        result = BIRRIASDR_ERROR_UNSUPPORTED;
+    if (!result) atomic_store(&dev->packet_detect_suppression, enabled ? 1u : 0u);
+    pthread_mutex_unlock(&dev->control_mutex);
+    return result;
+}
+
+int birriasdr_get_packet_detect_suppression(const birriasdr_dev_t *dev)
+{
+    return dev && atomic_load(&dev->packet_detect_suppression) ? 1 : 0;
+}
+
+/* Stage the receiver selection for the next preparation; never a live control. */
+int birriasdr_set_receive_chain(birriasdr_dev_t *dev, int chain)
+{
+    int result;
+    if (!dev) return BIRRIASDR_ERROR_INVALID;
+    pthread_mutex_lock(&dev->control_mutex);
+    result = require_idle(dev);
+    if (!result && !(dev->backend->capabilities & BIRRIASDR_CAP_CHAIN_SELECT))
+        result = BIRRIASDR_ERROR_UNSUPPORTED;
+    if (!result && (chain < BIRRIASDR_CHAIN_0 || chain > BIRRIASDR_CHAIN_BOTH))
+        result = BIRRIASDR_ERROR_INVALID;
+    if (!result) atomic_store(&dev->receive_chain, (unsigned)chain);
+    pthread_mutex_unlock(&dev->control_mutex);
+    return result;
+}
+
+int birriasdr_get_receive_chain(const birriasdr_dev_t *dev)
+{
+    return dev ? (int)atomic_load(&dev->receive_chain) : BIRRIASDR_CHAIN_0;
 }
 
 /* TODO: establish crystal/PLL correction without changing sample interpretation. */

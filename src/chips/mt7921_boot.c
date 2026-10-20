@@ -13,12 +13,13 @@
  *
  *   restore gain -> WFSYS reset -> ROM USB/DMA -> stale input drain -> patch check
  *   -> original program download -> ICAP setup -> RF setup -> gain -> matched filter
+ *   -> optional packet-detect suppression -> optional receive-chain selection
  *
- * Reset is not equivalent to removing power. Analog gain overrides can survive
- * WFSYS reset, so mt_reset() restores our saved fields before resetting. A
- * vendor ROM patch can also survive; the ROM semaphore must report unpatched
- * state before we load code. A rejected patch state requires a cold boot, not
- * a fallback to a downloaded vendor image.
+ * Reset is not equivalent to removing power. Analog gain overrides and PHY
+ * fields can survive WFSYS reset, so mt_reset() restores our saved fields
+ * before resetting. A vendor ROM patch can also survive; the ROM semaphore
+ * must report unpatched state before we load code. A rejected patch state
+ * requires a cold boot, not a fallback to a downloaded vendor image.
  *
  * There are two DMA domains to keep separate. Registers at 0x7c024xxx and
  * 0x7c026xxx configure the host-interface WFDMA rings and scheduler. The MCU
@@ -77,14 +78,19 @@ static int reset_hardware(birriasdr_dev_t *dev)
     return bs_poll32(dev, BS_UHW, 0x74000a20, 1u << 22, 1u << 22, 200);
 }
 
-/* Analog gain and bandwidth fields can survive WFSYS reset. Restore both saved
- * baselines first, but attempt every cleanup even when an earlier one fails.
+/* Analog gain, bandwidth, detector and chain fields can survive WFSYS reset.
+ * Restore the saved baselines first (chain selection, applied last, first),
+ * but attempt every cleanup even when an earlier one fails.
  */
 int mt_reset(birriasdr_dev_t *dev)
 {
+    int chain = mt_restore_chain(dev);
+    int detect = mt_restore_detect(dev);
     int restore = mt_restore_gain(dev);
     int filter = mt_restore_filter(dev);
     int reset = reset_hardware(dev);
+    if (chain < 0) return chain;
+    if (detect < 0) return detect;
     if (restore < 0) return restore;
     return filter < 0 ? filter : reset;
 }
@@ -293,7 +299,9 @@ static int prepare_once(birriasdr_dev_t *dev, uint32_t packets)
     BS_TRY(bs_update32(dev, BS_MMIO, 0x74000018, 0xffff, (1u << 21) | (32u << 8) | 100));
     BS_TRY(bs_update32(dev, BS_MMIO, 0x7400000c, 0xff, 30));
     dev->stats.stage = BIRRIASDR_STAGE_RF;
-    return mt_configure_filter(dev);
+    BS_TRY(mt_configure_filter(dev));
+    BS_TRY(mt_configure_detect(dev));
+    return mt_configure_chain(dev);
 }
 
 /* Retry a transient startup failure once, from a complete USB/WFSYS reset.

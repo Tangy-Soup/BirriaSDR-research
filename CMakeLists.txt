@@ -21,7 +21,8 @@ find_package_handle_standard_args(LIBUSB REQUIRED_VARS LIBUSB_LIBRARY LIBUSB_INC
 set(BIRRIASDR_SOURCES
     src/device.c src/io.c src/usb.c src/usb_stream.c src/stream.c
     src/chips/mt7921_boot.c src/chips/mt7921_rf.c src/chips/mt7921_tune.c src/chips/mt7921_gain.c
-    src/chips/mt7921_capture.c src/chips/mt7921_filter.c src/chips/mt7921_frame.c src/chips/mt7925.c)
+    src/chips/mt7921_capture.c src/chips/mt7921_filter.c src/chips/mt7921_detect.c src/chips/mt7921_chain.c
+    src/chips/mt7921_frame.c src/chips/mt7925.c)
 add_library(birriasdr_objects OBJECT ${BIRRIASDR_SOURCES})
 set_target_properties(birriasdr_objects PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
 target_compile_features(birriasdr_objects PUBLIC c_std_11)
@@ -73,6 +74,18 @@ if(BUILD_TESTING)
     target_include_directories(test_filter PRIVATE include src ${LIBUSB_INCLUDE_DIR})
     target_link_libraries(test_filter PRIVATE Threads::Threads)
     add_test(NAME filter_configuration COMMAND test_filter)
+    add_executable(test_detect tests/test_detect.c src/chips/mt7921_detect.c src/io.c)
+    target_compile_features(test_detect PRIVATE c_std_11)
+    target_compile_definitions(test_detect PRIVATE _POSIX_C_SOURCE=200809L)
+    target_include_directories(test_detect PRIVATE include src ${LIBUSB_INCLUDE_DIR})
+    target_link_libraries(test_detect PRIVATE Threads::Threads)
+    add_test(NAME detect_configuration COMMAND test_detect)
+    add_executable(test_chain tests/test_chain.c src/chips/mt7921_chain.c src/io.c)
+    target_compile_features(test_chain PRIVATE c_std_11)
+    target_compile_definitions(test_chain PRIVATE _POSIX_C_SOURCE=200809L)
+    target_include_directories(test_chain PRIVATE include src ${LIBUSB_INCLUDE_DIR})
+    target_link_libraries(test_chain PRIVATE Threads::Threads)
+    add_test(NAME chain_configuration COMMAND test_chain)
     add_executable(test_live_gain tests/test_live_gain.c $<TARGET_OBJECTS:birriasdr_objects>)
     target_include_directories(test_live_gain PRIVATE include src ${LIBUSB_INCLUDE_DIR})
     target_link_libraries(test_live_gain PRIVATE ${LIBUSB_LIBRARY} Threads::Threads)

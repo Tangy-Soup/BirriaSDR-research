@@ -50,7 +50,16 @@ enum birriasdr_capability {
     BIRRIASDR_CAP_CALIBRATION = 1u << 6,
     BIRRIASDR_CAP_LIVE_GAIN = 1u << 7,
     BIRRIASDR_CAP_TUNING = 1u << 8,
-    BIRRIASDR_CAP_LIVE_TUNING = 1u << 9
+    BIRRIASDR_CAP_LIVE_TUNING = 1u << 9,
+    BIRRIASDR_CAP_PD_SUPPRESS = 1u << 10,
+    BIRRIASDR_CAP_CHAIN_SELECT = 1u << 11
+};
+
+/** Receive chains for birriasdr_set_receive_chain(). */
+enum birriasdr_receive_chain {
+    BIRRIASDR_CHAIN_0 = 0,
+    BIRRIASDR_CHAIN_1 = 1,
+    BIRRIASDR_CHAIN_BOTH = 2
 };
 
 /** Discovery includes recognized but unimplemented devices (capabilities=0).
@@ -207,8 +216,9 @@ int birriasdr_set_center_freq(birriasdr_dev_t *dev, uint64_t frequency_hz);
 uint64_t birriasdr_get_center_freq(const birriasdr_dev_t *dev);
 
 /** Stage complex samples/second. MT7921 accepts 40000000 only at present.
- * The sampled span is 40 MHz, using matched nominal 40 MHz analog/digital
- * settings. This is not a calibrated passband or an alias-rejection guarantee.
+ * The sampled span is 40 MHz, with a selectable matched nominal 20 or 40 MHz
+ * analog/digital filter profile. This is not a calibrated passband or an
+ * alias-rejection guarantee.
  */
 int birriasdr_set_sample_rate(birriasdr_dev_t *dev, uint32_t samples_per_second);
 
@@ -254,11 +264,51 @@ int birriasdr_get_tuner_gains(birriasdr_dev_t *dev, int *gains, size_t capacity)
  */
 int birriasdr_set_agc_mode(birriasdr_dev_t *dev, int enabled);
 
-/** Reserved: independently selectable RF filter bandwidth in Hz. The backend
- * applies its fixed nominal 40 MHz profile automatically. This setter remains
- * UNSUPPORTED until additional widths and their RF response are qualified.
+/** Stage nominal analog/digital filter bandwidth in Hz, while idle only.
+ * MT7921 supports 20000000 and 40000000; default is 40000000. Both retain the
+ * 40 MSps complex sample clock. The 20 MHz profile helps isolate one Wi-Fi
+ * channel; it does not reduce USB traffic. Profiles are not calibrated flat
+ * passbands or brick-wall anti-alias filters. Other widths return UNSUPPORTED.
  */
 int birriasdr_set_tuner_bandwidth(birriasdr_dev_t *dev, uint32_t bandwidth_hz);
+
+/** Return the committed nominal filter profile, including during capture.
+ * Zero for NULL or a backend with no implemented filter profile.
+ */
+uint32_t birriasdr_get_tuner_bandwidth(const birriasdr_dev_t *dev);
+
+/** Stage packet-detect suppression for the next read, while idle only.
+ * Nonzero enables it; zero (the default) leaves the PHY as booted.
+ * With CAP_PD_SUPPRESS, the PHY's own packet detector stops triggering on
+ * noise. Its retriggers otherwise blank short runs of exact-zero samples into
+ * the capture. The detector adapts after GO, so blanking can continue for the
+ * first ~250 ms, occasionally ~590 ms, of each read; discard that prefix. This is a research setting:
+ * it is not calibrated. A paired weak-AP test found no weak-frame cost.
+ * Returns UNSUPPORTED without the capability.
+ */
+int birriasdr_set_packet_detect_suppression(birriasdr_dev_t *dev, int enabled);
+
+/** Return 1 if packet-detect suppression is staged or active, otherwise 0. */
+int birriasdr_get_packet_detect_suppression(const birriasdr_dev_t *dev);
+
+/** Stage the receive chain for the next read, while idle only.
+ * BIRRIASDR_CHAIN_0 (the default) leaves the backend's normal path unchanged.
+ * With CAP_CHAIN_SELECT, BIRRIASDR_CHAIN_1 captures the second receiver alone
+ * at the same tap stage, rate and format. BIRRIASDR_CHAIN_BOTH interleaves the
+ * two chains sample by sample (chain 0 first, then chain 1), each at the
+ * nominal rate after the channel filter, so a read carries twice as many
+ * samples per second. That doubles the USB load, and source overruns are more
+ * likely. Both-chain samples also carry a static DC offset per chain (up to a
+ * few hundred LSB) that is not removed; subtract it before demodulating.
+ * Both are research settings, qualified only on the tested board: a
+ * chain is a receiver, not an antenna switch, and connector routing depends on
+ * the board. Returns UNSUPPORTED without the capability, INVALID for an
+ * unknown chain and BUSY while a read is active.
+ */
+int birriasdr_set_receive_chain(birriasdr_dev_t *dev, int chain);
+
+/** Return the staged or active receive chain; BIRRIASDR_CHAIN_0 for NULL. */
+int birriasdr_get_receive_chain(const birriasdr_dev_t *dev);
 
 /** Reserved: oscillator correction in ppm. UNSUPPORTED; no software DDC added. */
 int birriasdr_set_freq_correction(birriasdr_dev_t *dev, int ppm);

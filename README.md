@@ -55,7 +55,9 @@ receiver is centered on Wi-Fi channel 6 (nominally 2437 MHz) and uses receive
 chain 0 at 40 million complex samples per second. The library can retune
 anywhere in the 2156 to 2610 MHz and 4500 to 6200 MHz bands, even while
 streaming and across bands. At 40 MSps it
-pairs the **40 MHz analog filter with the matching digital bandwidth setting**.
+pairs the **40 MHz analog filter with the matching digital bandwidth setting**
+by default. Select `--bandwidth 20000000` to use the narrower analog/digital
+profile for one Wi-Fi channel while keeping the same 40 MSps sample clock.
 On the tested board, the measured noise spectrum falls about 3 dB at ±18 MHz.
 The filters do not fully reject signals outside the sampled span, so strong
 signals there can alias into the capture. Treat this as measured behavior
@@ -75,13 +77,15 @@ For more detail, see:
 | Frequency tuning | 2156 to 2610 MHz, or 2190 to 2610 MHz on generic-ID boards, and 4500 to 6200 MHz, including live changes and band switches. Sensitivity is unverified; 5 GHz reception was checked from 5250 to 5815 MHz |
 | Tuning step | Nominally 28.61 Hz, using the full 20-bit fraction. Requests are in whole hertz with no Wi-Fi channel restriction. The physical response to fine steps is still unmeasured |
 | Sample rate | 40 MSps complex, fixed |
+| Receive filter profiles | Nominal 20 or 40 MHz, selected while idle. Both keep 40 MSps and the same USB traffic; default is 40 MHz |
 | Sampled bandwidth | 40 MHz span with matching nominal 40 MHz analog and digital settings. See [filter characteristics](docs/mt7921.md#filtering) for rolloff and aliasing limits |
 | Sample resolution | Signed 14-bit I and Q, from −8192 to 8191 |
-| Receive channels | One (chain 0) |
+| Receive channels | Chain 0 by default. Opt-in research setting (`--chain 1` or `--chain both`) for the second receiver alone or both chains interleaved. See [receive-chain selection](docs/mt7921.md#receive-chain-selection) |
 | Transmit | None, receive only |
 | Gain | Raw codes for LNA 0 to 5, filter stage 0 to 8 and digital 0 to 12. 5 GHz needs LNA 4 or 5. Not calibrated in dB |
 | Live gain changes | Supported without restarting capture, with a brief settling transient |
 | Automatic gain | Manual overrides can be released. Full AGC control is not implemented |
+| Capture blanking | The PHY packet detector blanks short zero runs into the capture. Opt-in packet-detect suppression (`--pd-n8`) removes them after about 250 ms of settling. Research setting, see [packet-detect suppression](docs/mt7921.md#packet-detect-suppression) |
 | Frequency accuracy | Uncalibrated, with no ppm correction |
 | Reference clock | On-board 40 MHz crystal |
 | Host interface | Bulk transfers over USB 3.0 at about 161 MB/s |
@@ -137,6 +141,52 @@ To pick a different center frequency, pass it in hertz:
 ./build/birria_rx --frequency 2437123456 off-channel.cs16 8000000 manual
 ```
 
+For Wi-Fi discovery, a narrower profile can reduce neighboring-channel energy:
+
+```sh
+./build/birria_rx --frequency 2462000000 --bandwidth 20000000 --gain 3 8 0 ch11.cs16 20000000
+```
+
+`--gain LNA FILTER DIGITAL` selects manual raw codes, including zero, with ranges
+0–3, 0–8 and 0–12. These are not calibrated dB values. The narrower filter helped
+decode additional AP beacons on the local EDUP MT7921AU board; this does not
+qualify every supported board or guarantee a particular rejection response.
+
+For finite recordings, `--buffered` acquires into RAM before converting and
+writing the file, keeping disk I/O out of acquisition. Supply 2048–80,000,000
+samples in multiples of 2048 (at most 320 MB / two seconds at 40 MSps).
+Cancellation is checked after the bounded synchronous read. Failed acquisitions
+are not written; a disk write failure still returns an error. This option does
+not enlarge the device's SRAM ring or guarantee freedom from overruns.
+
+To suppress the PHY's packet-detect blanking (opt-in research setting, see
+[packet-detect suppression](docs/mt7921.md#packet-detect-suppression)):
+
+```sh
+./build/birria_rx --buffered --frequency 2462000000 --bandwidth 20000000 --gain 3 8 0 --pd-n8 ch11.cs16 39999488 manual
+```
+
+`--pd-n8` discards the first 24,000,512 samples (about 600 ms, while the
+detector settles) and still writes the requested count. With `--buffered`, the
+requested count plus the discard must fit within 80,000,000 samples.
+`--discard SAMPLES` sets the discard explicitly, in multiples of 2048 when
+buffered, and also works without `--pd-n8`.
+
+To capture the second receiver (chain 1) instead, or both chains at once
+(opt-in research setting, see
+[receive-chain selection](docs/mt7921.md#receive-chain-selection)):
+
+```sh
+./build/birria_rx --buffered --frequency 2437000000 --bandwidth 20000000 --gain 3 8 0 --chain 1 wf1.cs16 8388608 manual
+./build/birria_rx --buffered --frequency 2437000000 --bandwidth 20000000 --gain 3 8 0 --chain both both.cs16 16777216 manual
+```
+
+`--chain both` writes interleaved samples: even-numbered complex samples are
+chain 0 and odd-numbered ones are chain 1, each at 40 MSps. Counts and
+`--discard` are in interleaved samples and must be even, so the `--pd-n8`
+default discard doubles to 48,001,024. Both-chain samples carry a DC offset per chain that the
+library does not remove; subtract it before demodulating.
+
 Before you start, the dongle must have **no vendor ROM patch loaded**, and its
 Wi-Fi interface must be free for libusb to claim. A software reset does not
 clear a patch that is already loaded. On Linux, stop the Wi-Fi driver from
@@ -165,6 +215,8 @@ birriasdr_open(&dev, index);
 birriasdr_get_tuning_band(dev, 0, &minimum_hz, &maximum_hz);
 birriasdr_set_center_freq(dev, 2437000000ULL);
 birriasdr_set_sample_rate(dev, 40000000);
+birriasdr_set_tuner_bandwidth(dev, 20000000); /* Optional nominal profile; idle only. */
+birriasdr_set_packet_detect_suppression(dev, 1); /* Optional; discard ~600 ms. */
 birriasdr_set_tuner_gain_mode(dev, 1);
 birriasdr_set_gain_codes(dev, &gain);
 birriasdr_read_async(dev, callback, context, 0, 0);

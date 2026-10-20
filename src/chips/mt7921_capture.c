@@ -12,6 +12,8 @@
  * This module selects the capture tap and clocks; mt7921_rf.c makes that tap
  * receive an external signal. Tap 4 is selected in 0x830ad448[11:8] and uses
  * logical chain 0 (physical RF SPI 1). This is not an antenna-switch control.
+ * mt7921_chain.c optionally moves the tap and source mode to chain 1 or to
+ * both chains after the rest of preparation.
  * The backend uses the channel-6 anchor at 40 MSps complex and exposes an
  * low-band retuning interval without changing the capture clocks.
  *
@@ -139,11 +141,13 @@ const struct bs_backend bs_mt7921_backend = {
     .chipset = BIRRIASDR_CHIP_MT7921,
     .name = "MT7961/MT7972",
     .capabilities = BIRRIASDR_CAP_RX | BIRRIASDR_CAP_RAW_GAIN | BIRRIASDR_CAP_LIVE_GAIN |
-                    BIRRIASDR_CAP_TUNING | BIRRIASDR_CAP_LIVE_TUNING,
+                    BIRRIASDR_CAP_TUNING | BIRRIASDR_CAP_LIVE_TUNING | BIRRIASDR_CAP_FILTER |
+                    BIRRIASDR_CAP_PD_SUPPRESS | BIRRIASDR_CAP_CHAIN_SELECT,
     .default_frequency = MT_RF_ANCHOR_HZ,
     .min_frequency = MT_RF_MIN_HZ, .max_frequency = MT_RF_5G_MAX_HZ,
     .bands = bands, .band_count = sizeof(bands) / sizeof(bands[0]),
     .default_rate = 40000000,
+    .default_bandwidth = 40000000, .validate_bandwidth = mt_validate_bandwidth,
     .validate = validate,
     .identify = identify,
     .prepare = mt_prepare, .start = mt_start, .stop = mt_stop,

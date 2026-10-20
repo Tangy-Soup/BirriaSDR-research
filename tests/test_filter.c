@@ -73,6 +73,7 @@ static void initialize(struct model *model, birriasdr_dev_t *dev)
     memset(dev, 0, sizeof(*dev));
     memcpy(model->value, baseline, sizeof(baseline));
     dev->rate = 40000000;
+    atomic_init(&dev->bandwidth, 40000000);
     dev->io = (struct bs_io){model, read_word, write_word};
 }
 
@@ -114,6 +115,25 @@ int main(void)
     CHECK(dev.mt7921.filter_saved);
     CHECK(mt_restore_filter(&dev) == 0 && !dev.mt7921.filter_saved);
     CHECK(!memcmp(model.value, baseline, sizeof(baseline)));
+
+    initialize(&model, &dev);
+    atomic_store(&dev.bandwidth, 20000000);
+    /* Seed class-one fields so both downward transitions must actually write. */
+    model.value[0] |= 0x40000000;
+    model.value[1] |= 0x40000000;
+    model.value[2] |= 0x01000000;
+    model.value[3] |= 0x01000000;
+    uint32_t narrow_baseline[4];
+    memcpy(narrow_baseline, model.value, sizeof(narrow_baseline));
+    CHECK(mt_configure_filter(&dev) == 0);
+    CHECK(!(model.value[0] & 0xc0000000) && !(model.value[1] & 0xc0000000));
+    CHECK(!(model.value[2] & 0x0f000000) && !(model.value[3] & 0x0f000000));
+    CHECK(mt_restore_filter(&dev) == 0);
+    CHECK(!memcmp(model.value, narrow_baseline, sizeof(narrow_baseline)));
+
+    initialize(&model, &dev);
+    atomic_store(&dev.bandwidth, 30000000);
+    CHECK(mt_configure_filter(&dev) == BIRRIASDR_ERROR_UNSUPPORTED && !model.operations);
 
     initialize(&model, &dev);
     dev.rate = 20000000;

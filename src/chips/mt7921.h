@@ -13,9 +13,10 @@
  *
  * The caller owns the USB interface. Prepare configures hardware while the MCU
  * waits for GO; start follows queued USB reads; stop requests DMA drain. Reset
- * restores saved gain and filter fields before resetting WFSYS. RF access must not
- * race an active RF controller. These helpers are private so the public API
- * can enforce that lifecycle rather than expose uncoordinated register writes.
+ * restores saved packet-detect, gain and filter fields before resetting WFSYS.
+ * RF access must not race an active RF controller. These helpers are private
+ * so the public API can enforce that lifecycle rather than expose
+ * uncoordinated register writes.
  * File-level comments in each implementation explain the hardware mechanisms
  * and the limits of the measurements supporting them.
  */
@@ -68,7 +69,12 @@ int mt_rf_update(birriasdr_dev_t *dev, unsigned port, uint32_t address,
                  uint32_t clear, uint32_t set);
 int mt_configure_rf(birriasdr_dev_t *dev);
 int mt_configure_filter(birriasdr_dev_t *dev);
+int mt_validate_bandwidth(uint32_t bandwidth);
 int mt_restore_filter(birriasdr_dev_t *dev);
+int mt_configure_detect(birriasdr_dev_t *dev);
+int mt_restore_detect(birriasdr_dev_t *dev);
+int mt_configure_chain(birriasdr_dev_t *dev);
+int mt_restore_chain(birriasdr_dev_t *dev);
 int mt_apply_gain(birriasdr_dev_t *dev);
 int mt_change_gain(birriasdr_dev_t *dev, bool manual, const struct birriasdr_gain *gain);
 int mt_restore_gain(birriasdr_dev_t *dev);
