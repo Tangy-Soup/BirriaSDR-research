@@ -4,6 +4,7 @@ include(GNUInstallDirs)
 include(CTest)
 option(BUILD_SHARED_LIBS "Build a shared library" ON)
 option(BIRRIASDR_SANITIZE "Enable address/undefined behavior sanitizers" OFF)
+option(BIRRIASDR_SOAPY "Build the SoapySDR module (needs C++17 and SoapySDR)" OFF)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 endif()
@@ -150,6 +151,10 @@ if(BUILD_TESTING)
         target_link_options(test_startup_recovery PRIVATE -Wl,--wrap=libusb_reset_device -Wl,--wrap=libusb_bulk_transfer)
     endif()
     # Deliberately not registered with CTest: this resets a physical dongle.
+endif()
+
+if(BIRRIASDR_SOAPY)
+    add_subdirectory(soapy)
 endif()
 
 file(RELATIVE_PATH BIRRIA_PC_TO_PREFIX "${CMAKE_INSTALL_FULL_LIBDIR}/pkgconfig" "${CMAKE_INSTALL_PREFIX}")

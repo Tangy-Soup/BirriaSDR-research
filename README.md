@@ -322,6 +322,65 @@ libdir) to `PKG_CONFIG_PATH`. Builds produce a shared library by default. For a
 static library, configure with `-DBUILD_SHARED_LIBS=OFF` and link with
 `pkg-config --static`.
 
+## SoapySDR module
+
+An optional [SoapySDR](https://github.com/pothosware/SoapySDR) module in
+[`soapy/`](soapy/BirriaSDR.cpp) exposes the receiver as `driver=birriasdr`, so
+gqrx, SDR++, GNU Radio (Soapy or osmocom sources) and other Soapy applications
+can use it. It needs a C++17 compiler and the SoapySDR development files
+(`sudo apt install libsoapysdr-dev soapysdr-tools` on Debian or Ubuntu,
+`brew install soapysdr` on macOS):
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBIRRIASDR_SOAPY=ON
+cmake --build build -j
+sudo cmake --install build --prefix /usr/local
+SoapySDRUtil --probe=driver=birriasdr
+```
+
+Devices are listed as `BirriaSDR <board name>`. The USB location (`usb=bus:address`) is
+added to the label only when several identical boards are connected, because it
+changes on every replug and applications save settings by label.
+
+The module installs into `<libdir>/SoapySDR/modules<ABI>` under the prefix.
+SoapySDR searches its own prefix and, when that is `/usr`, also `/usr/local`.
+For a build-tree or other prefix, point `SOAPY_SDR_PLUGIN_PATH` at the module's
+directory.
+
+| Soapy control | Mapping |
+| --- | --- |
+| Channels | RX 0 is chain 0. With chain selection, RX 1 is chain 1, and a stream on channels `{0, 1}` captures both chains, deinterleaved into one buffer per channel. Chain 1 and both chains are research settings, as above |
+| Formats | Native `CS16` with full scale 8192, or `CF32` scaled to ±1 |
+| Sample rate | 40 MSps only |
+| Frequency | One `RF` component over the tuning range, retuned live. An out-of-range request is logged and leaves the tuner where it was |
+| Bandwidth | 20 or 40 MHz, rounded to the nearer one. A change during a stream applies at the next stream start |
+| Gain mode | Automatic releases the manual overrides; manual applies the cached codes |
+| Gain elements | `LNA` 0–3, `LPF` 0–8 and `DIG` 0–12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode |
+| Antenna | `RX` only |
+| Settings | `packet_detect_suppression` (applies at the next stream start; discard about the first 250 ms) and `max_restarts` (recovery budget, default 16) |
+| Stream arguments | `bufflen` (complex samples per USB buffer, default 65536), `buffers` (host ring depth, default 64) and `transfers` (queued USB transfers) |
+
+The module uses automatic recovery. Each source gap, recovered fault or buffer
+dropped because the application fell behind is reported once, as
+`SOAPY_SDR_OVERFLOW`, at the point where continuity was lost. Because some
+applications ignore that code, the module also logs a warning at most once per
+second while losses occur, for example
+`BirriaSDR: last 1.0 s: 1 device gap (lost before reaching the host)` or
+`BirriaSDR: last 1.0 s: 3 buffers (196608 samples) dropped because the application fell behind`,
+and once more when the stream stops. There are no hardware timestamps. Only one stream can be open per device.
+
+Setters such as frequency, gain, bandwidth, antenna and sample rate log errors
+through the SoapySDR logger instead of throwing, because some applications,
+SDR++ among them, call them without catching exceptions. Opening the device and
+setting up the stream still throw on failure.
+
+If an application exits while a stream is running without stopping it (SDR++
+does this when its window is closed), the module stops the stream during normal
+process exit, so the library still restores the gain registers before its
+reset. A killed or crashed application skips that cleanup. If manual gain was
+in use, the next start then fails at the gain stage with "unexpected hardware
+or receiver state"; unplug and reconnect the dongle to clear it.
+
 ## Source layout and firmware
 
 Each function has a comment above its definition explaining its hardware role,

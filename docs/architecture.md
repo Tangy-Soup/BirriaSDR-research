@@ -21,6 +21,7 @@ and the [MT7921 device reference](mt7921.md).
 | `src/chips/mt7925.c` | Explicitly unimplemented backend with no register writes |
 | `firmware/iq_stream.S` | Complete original device program and its constants |
 | `tools/rebuild_firmware.py` | Optional rebuild and verification of the header from the assembly |
+| `soapy/BirriaSDR.cpp` | Optional SoapySDR module over the public API: channel-to-chain mapping, host ring and gap reporting |
 
 The common reader consumes the event and mailbox protocol of our original
 firmware. Another backend can implement the same protocol on its own hardware.
