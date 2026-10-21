@@ -1,0 +1,11 @@
+# BirriaSDR: let a desktop user (uaccess) or members of plugdev open the
+# supported dongles through libusb without root. Install with
+#   sudo install -m 644 udev/60-birriasdr.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+# then replug. This only grants access; the Wi-Fi driver (mt7921u) must still
+# be kept from binding, as described in the README.
+
+# COMFAST MT7961 / MT7972
+SUBSYSTEM=="usb", ATTRS{idVendor}=="3574", ATTRS{idProduct}=="6211", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+# MediaTek MT7961 / MT7972, generic ID (for example EDUP AX3000M)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0e8d", ATTRS{idProduct}=="7961", MODE="0660", GROUP="plugdev", TAG+="uaccess"

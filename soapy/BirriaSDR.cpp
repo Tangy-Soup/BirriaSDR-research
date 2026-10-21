@@ -310,6 +310,10 @@ public:
         head_ = tail_ = filled_ = offset_ = 0;
         for (Slot &slot : ring_)
             slot.gap = false;
+        stream_rate_ = getSampleRate(SOAPY_SDR_RX, 0);
+        lost_ns_ = 0;
+        last_callback_ns_ = 0;
+        time_gap_ = false;
         reader_done_ = false;
         pending_gap_ = false;
         gap_report_ = GapReport{};
@@ -346,7 +350,10 @@ public:
     }
 
     /* A recovered gap or a full host ring is reported once as OVERFLOW, at the
-     * point in the sample sequence where continuity was lost.
+     * point in the sample sequence where continuity was lost. timeNs counts
+     * samples since activation at the nominal rate. Across a gap it also adds
+     * the lost interval as measured on the host clock (about a millisecond of
+     * uncertainty); it is a sample label, not a calibrated hardware clock.
      */
     int readStream(SoapySDR::Stream *, void *const *buffs, const size_t numElems, int &flags,
                    long long &timeNs, const long timeoutUs) override
@@ -374,6 +381,8 @@ public:
         }
         const size_t width = chain_slots_.size();
         size_t n = std::min(numElems, (slot.count - offset_) / width);
+        timeNs = slot.time_ns + std::llround((double)(offset_ / width) * 1e9 / stream_rate_);
+        flags |= SOAPY_SDR_HAS_TIME;
         const int16_t *iq = slot.iq.data() + offset_ * 2;
         for (size_t c = 0; c < width; ++c) {
             const int16_t *in = iq + chain_slots_[c] * 2;
@@ -654,7 +663,7 @@ public:
 
 private:
     friend struct ExitGuard;
-    struct Slot { std::vector<int16_t> iq; size_t count = 0; bool gap = false; };
+    struct Slot { std::vector<int16_t> iq; size_t count = 0; bool gap = false; long long time_ns = 0; };
     struct GapReport {
         std::chrono::steady_clock::time_point since = std::chrono::steady_clock::now();
         unsigned device_gaps = 0, dropped_buffers = 0;
@@ -664,9 +673,11 @@ private:
     /* Runs on the library's read thread: copy into the next free slot or drop
      * the buffer and flag the next one, so a slow consumer never stalls USB.
      */
-    static void onSamples(const int16_t *iq, uint32_t count, uint64_t, void *context)
+    static void onSamples(const int16_t *iq, uint32_t count, uint64_t first, void *context)
     {
         auto *self = static_cast<BirriaSDRDevice *>(context);
+        const double width = (double)self->chain_slots_.size();
+        long long time_ns = self->sampleTime(first / width, count / width);
         size_t tail;
         {
             std::lock_guard<std::mutex> lock(self->ring_mutex_);
@@ -682,6 +693,7 @@ private:
         Slot &slot = self->ring_[tail];
         std::memcpy(slot.iq.data(), iq, (size_t)count * 2 * sizeof(int16_t));
         slot.count = count;
+        slot.time_ns = time_ns;
         slot.gap = self->pending_gap_.exchange(false);
         {
             std::lock_guard<std::mutex> lock(self->ring_mutex_);
@@ -696,6 +708,7 @@ private:
     {
         auto *self = static_cast<BirriaSDRDevice *>(context);
         self->pending_gap_ = true;
+        self->time_gap_ = true;
         ++self->gap_report_.device_gaps;
         SoapySDR::logf(SOAPY_SDR_DEBUG, "BirriaSDR gap %u after %llu samples: %s", event->attempt,
                        (unsigned long long)event->next_sample, birriasdr_strerror(event->error));
@@ -724,6 +737,22 @@ private:
         }
         report = GapReport{};
         report.since = now;
+    }
+
+    /* Read thread only. The library's sample offsets skip lost samples, so
+     * after a device gap add the interval between the end of the last buffer
+     * before it and the start of this one, both estimated on the host clock.
+     */
+    long long sampleTime(double first, double count)
+    {
+        auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        long long duration = std::llround(count * 1e9 / stream_rate_);
+        if (time_gap_ && last_callback_ns_)
+            lost_ns_ += std::max(0LL, now - duration - last_callback_ns_);
+        time_gap_ = false;
+        last_callback_ns_ = now;
+        return std::llround(first * 1e9 / stream_rate_) + lost_ns_;
     }
 
     void applyStaged()
@@ -789,6 +818,9 @@ private:
     size_t head_ = 0, tail_ = 0, filled_ = 0, offset_ = 0;
     std::atomic<bool> pending_gap_{false};
     bool reader_done_ = false;
+    double stream_rate_ = SAMPLE_RATE;
+    long long lost_ns_ = 0, last_callback_ns_ = 0;
+    std::atomic<bool> time_gap_{false};
     GapReport gap_report_;
 };
 

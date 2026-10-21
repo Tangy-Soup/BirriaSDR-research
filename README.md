@@ -207,7 +207,8 @@ Before you start, the dongle must have **no vendor ROM patch loaded**, and its
 Wi-Fi interface must be free for libusb to claim. A software reset does not
 clear a patch that is already loaded. On Linux, stop the Wi-Fi driver from
 binding automatically before you reconnect the dongle, and give your user USB
-access (or run the example with `sudo`). On macOS, reconnect the dongle first if
+access with [`udev/60-birriasdr.rules`](udev/60-birriasdr.rules) (install
+steps are in the file), or run the example with `sudo`. On macOS, reconnect the dongle first if
 another driver loaded firmware onto it. The library refuses to run while a
 kernel driver is attached, and it never unloads drivers or power-cycles a USB
 hub.
@@ -374,6 +375,7 @@ directory.
 | Gain elements | `LNA` 0–3, `LPF` 0–8 and `DIG` 0–12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode |
 | Antenna | `RX` only |
 | Settings | `packet_detect_suppression` (applies at the next stream start; discard about the first 250 ms), `channel_filter` (capture after the digital channel filter; applies at the next stream start) and `max_restarts` (recovery budget, default 16) |
+| Timestamps | `readStream` sets `SOAPY_SDR_HAS_TIME`. `timeNs` counts samples since activation at the nominal rate; across a gap it adds the lost interval measured on the host clock (about 1 ms uncertainty). It labels samples; it is not a hardware clock |
 | Stream arguments | `bufflen` (complex samples per USB buffer, default 65536), `buffers` (host ring depth, default 64) and `transfers` (queued USB transfers) |
 
 The module uses automatic recovery. Each source gap, recovered fault or buffer
@@ -383,7 +385,17 @@ applications ignore that code, the module also logs a warning at most once per
 second while losses occur, for example
 `BirriaSDR: last 1.0 s: 1 device gap (lost before reaching the host)` or
 `BirriaSDR: last 1.0 s: 3 buffers (196608 samples) dropped because the application fell behind`,
-and once more when the stream stops. There are no hardware timestamps. Only one stream can be open per device.
+and once more when the stream stops. Only one stream can be open per device.
+
+Test scripts in [`soapy/tests/`](soapy/tests) check sustained rate and
+timestamps (`soapy_rate_test.py`), live retuning (`soapy_tune_test.py`) and the
+gr-osmosdr path that gqrx uses (`osmosdr_test.py`). They need the SoapySDR
+Python bindings, NumPy and, for the last one, GNU Radio with gr-osmosdr
+(`sudo apt install python3-soapysdr python3-numpy gr-osmosdr` on Debian or
+Ubuntu). In gqrx, choose "Other..." and enter `soapy=0,driver=birriasdr`.
+GNU Radio 3.10's own Soapy block applies `write_setting` normally, but its
+Python `read_setting` always returns the declared default without asking the
+device.
 
 Setters such as frequency, gain, bandwidth, antenna and sample rate log errors
 through the SoapySDR logger instead of throwing, because some applications,
