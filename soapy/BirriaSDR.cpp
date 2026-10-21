@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Luigi C.
- * SoapySDR module over libbirriasdr: one RX stream, raw gain indices, no DSP.
+ * SoapySDR module over libbirriasdr: one RX stream, raw gain indices, no DSP
+ * beyond the library's optional 2:1 decimation.
  */
 #include "birriasdr.h"
 #include <SoapySDR/Device.hpp>
@@ -23,6 +24,8 @@
 namespace {
 
 constexpr double SAMPLE_RATE = 40e6;
+/* Library host decimation (birriasdr_set_sample_rate()). */
+constexpr double DECIMATED_RATE = 20e6;
 constexpr double FULL_SCALE = 8192.0;
 constexpr size_t DEFAULT_BUFFER_SAMPLES = 65536;
 constexpr size_t DEFAULT_BUFFERS = 64;
@@ -240,6 +243,8 @@ public:
             throw std::runtime_error("BirriaSDR: channels must be {0}, {1} or {0, 1}");
         if (chain != BIRRIASDR_CHAIN_0 && !(caps_ & BIRRIASDR_CAP_CHAIN_SELECT))
             throw std::runtime_error("BirriaSDR: this device has only chain 0");
+        if (chain == BIRRIASDR_CHAIN_BOTH && getSampleRate(SOAPY_SDR_RX, 0) != SAMPLE_RATE)
+            throw std::runtime_error("BirriaSDR: both chains need the 40 MSps rate");
 
         size_t bufflen = args.count("bufflen") ? std::stoul(args.at("bufflen")) : DEFAULT_BUFFER_SAMPLES;
         size_t buffers = args.count("buffers") ? std::stoul(args.at("buffers")) : DEFAULT_BUFFERS;
@@ -451,12 +456,17 @@ public:
         return getFrequency(direction, channel);
     }
 
-    /* Sample rate: 40 MSps only. */
-    std::vector<double> listSampleRates(const int, const size_t) const override { return {SAMPLE_RATE}; }
+    /* Sample rate: the 40 MSps capture, or 20 MSps after the library's halfband
+     * (flat to +/-8.5 MHz; single chain only).
+     */
+    std::vector<double> listSampleRates(const int, const size_t) const override
+    {
+        return {DECIMATED_RATE, SAMPLE_RATE};
+    }
 
     SoapySDR::RangeList getSampleRateRange(const int, const size_t) const override
     {
-        return {SoapySDR::Range(SAMPLE_RATE, SAMPLE_RATE)};
+        return {SoapySDR::Range(DECIMATED_RATE, DECIMATED_RATE), SoapySDR::Range(SAMPLE_RATE, SAMPLE_RATE)};
     }
 
     void setSampleRate(const int, const size_t, const double rate) override

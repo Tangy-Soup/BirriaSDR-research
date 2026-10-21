@@ -126,7 +126,7 @@ int main(int argc, char **argv)
     struct birriasdr_stream_stats stats;
     struct recorder recorder = {0};
     uint64_t frequency = 0;
-    uint64_t bandwidth = 0;
+    uint64_t bandwidth = 0, rate = 0;
     struct birriasdr_gain gain = {2, 8, 0};
     /* About 600 ms at 40 MSps, in whole 2048-sample packets: past the detector's
      * measured adaptation after packet-detect suppression starts (0.1-252 ms
@@ -165,6 +165,10 @@ int main(int argc, char **argv)
                 return 1;
             explicit_discard = 1;
             argument += 2;
+        } else if (!strcmp(argv[argument], "--rate") && argument + 1 < argc) {
+            if (parse_number(argv[argument + 1], &rate) || rate > UINT32_MAX)
+                return 1;
+            argument += 2;
         } else if (!strcmp(argv[argument], "--bandwidth") && argument + 1 < argc) {
             if (parse_number(argv[argument + 1], &bandwidth) || bandwidth > UINT32_MAX)
                 return 1;
@@ -184,7 +188,7 @@ int main(int argc, char **argv)
         }
     }
     if (argc - argument < 1 || argc - argument > 3) {
-        fprintf(stderr, "Usage: %s --list | [--buffered] [--frequency Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--chain 0|1|both] [--discard SAMPLES] output.cs16 [complex-samples [manual]]\n", argv[0]);
+        fprintf(stderr, "Usage: %s --list | [--buffered] [--frequency Hz] [--rate Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--chain 0|1|both] [--discard SAMPLES] output.cs16 [complex-samples [manual]]\n", argv[0]);
         return 1;
     }
     if (argc - argument >= 2 && parse_number(argv[argument + 1], &recorder.limit))
@@ -196,6 +200,9 @@ int main(int argc, char **argv)
      */
     if (!pd_n8 && !explicit_discard)
         discard = 0;
+    /* The settling prefix is time: at 20 MSps it is half as many samples. */
+    if (rate == 20000000 && !explicit_discard)
+        discard = discard ? 5860 * 2048 : 0;
     /* Both chains interleave two samples per sample time (chain 0 first), so
      * counts are interleaved samples and the default settling prefix doubles.
      */
@@ -217,6 +224,14 @@ int main(int argc, char **argv)
         return 1;
     }
     recorder.dev = dev;
+    if (rate) {
+        result = birriasdr_set_sample_rate(dev, (uint32_t)rate);
+        if (result < 0) {
+            fprintf(stderr, "Sample rate: %s\n", birriasdr_strerror(result));
+            birriasdr_close(dev);
+            return 1;
+        }
+    }
     if (bandwidth) {
         result = birriasdr_set_tuner_bandwidth(dev, (uint32_t)bandwidth);
         if (result < 0) {

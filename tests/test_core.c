@@ -254,6 +254,16 @@ static void test_api(void)
     CHECK(birriasdr_set_channel_filter(NULL, 1) == BIRRIASDR_ERROR_INVALID);
     CHECK(birriasdr_set_channel_filter(&dev, 3) == 0);
     CHECK(birriasdr_get_channel_filter(&dev) == 1);
+    /* Half the hardware rate is host decimation; nothing else is invented. */
+    dev.decimation = 1;
+    CHECK(birriasdr_get_sample_rate(&dev) == 40000000);
+    CHECK(birriasdr_set_sample_rate(&dev, 20000000) == 0);
+    CHECK(birriasdr_get_sample_rate(&dev) == 20000000 && dev.rate == 40000000 && dev.decimation == 2);
+    CHECK(birriasdr_set_sample_rate(&dev, 10000000) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_set_sample_rate(&dev, 0) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_get_sample_rate(&dev) == 20000000);
+    CHECK(birriasdr_set_sample_rate(&dev, 40000000) == 0);
+    CHECK(birriasdr_get_sample_rate(&dev) == 40000000 && dev.decimation == 1);
     CHECK(birriasdr_set_center_freq(&dev, UINT64_C(3000000000)) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_set_center_freq(&dev, UINT64_C(4499999999)) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_set_center_freq(&dev, UINT64_C(6200000001)) == BIRRIASDR_ERROR_UNSUPPORTED);

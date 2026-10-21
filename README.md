@@ -76,7 +76,7 @@ For more detail, see:
 | Hardware | COMFAST dongle `3574:6211`, or a board with MediaTek's generic ID `0e8d:7961`, with an MT7961 digital die and an MT7972 analog die |
 | Frequency tuning | 2156 to 2610 MHz, or 2190 to 2610 MHz on generic-ID boards, and 4500 to 6200 MHz, including live changes and band switches. Sensitivity is unverified; 5 GHz reception was checked from 5250 to 5815 MHz |
 | Tuning step | Nominally 28.61 Hz, using the full 20-bit fraction. Requests are in whole hertz with no Wi-Fi channel restriction. The physical response to fine steps is still unmeasured |
-| Sample rate | 40 MSps complex, fixed |
+| Sample rate | 40 MSps complex capture. 20 MSps output is also available through a 2:1 halfband on the host (`--rate 20000000`), flat to ±8.5 MHz; USB traffic is unchanged. |
 | Receive filter profiles | Nominal 20 or 40 MHz, selected while idle. Both keep 40 MSps and the same USB traffic; default is 40 MHz. Opt-in `--channel-filter` captures after the PHY's digital channel filter, which follows the profile: at 20 MHz it lowered the floor 10–15 MHz off centre by about 13 dB. See [channel filter](docs/mt7921.md#channel-filter) |
 | Sampled bandwidth | 40 MHz span with matching nominal 40 MHz analog and digital settings. See [filter characteristics](docs/mt7921.md#filtering) for rolloff and aliasing limits |
 | Sample resolution | Signed 14-bit I and Q, from −8192 to 8191 |
@@ -172,14 +172,21 @@ requested count plus the discard must fit within 80,000,000 samples.
 `--discard SAMPLES` sets the discard explicitly, in multiples of 2048 when
 buffered, and also works without `--pd-n8`.
 
-To isolate one Wi-Fi channel with the PHY's digital channel filter:
+To isolate one Wi-Fi channel with the PHY's digital channel filter, and
+optionally halve the output rate on the host:
 
 ```sh
 ./build/birria_rx --buffered --frequency 2462000000 --bandwidth 20000000 --channel-filter --gain 3 8 0 ch11.cs16 20000768 manual
+./build/birria_rx --buffered --frequency 2462000000 --bandwidth 20000000 --channel-filter --rate 20000000 --gain 3 8 0 ch11_20m.cs16 10000384 manual
 ```
 
 `--channel-filter` moves the capture to the channel-filtered tap. Use it with
-the 20 MHz profile; at 40 MHz it only reduces aliasing.
+the 20 MHz profile; at 40 MHz it only reduces aliasing. `--rate 20000000`
+decimates 2:1 with a halfband filter that is flat to ±8.5 MHz and −6 dB at
+±10 MHz. Counts and `--discard` are then output samples, the `--pd-n8` default
+discard halves to 12,001,280, and the first 23 output samples of each
+acquisition carry the filter's start transient. It cannot be combined with
+`--chain both`.
 
 To capture the second receiver (chain 1) instead, or both chains at once
 (opt-in research setting, see
@@ -360,7 +367,7 @@ directory.
 | --- | --- |
 | Channels | RX 0 is chain 0. With chain selection, RX 1 is chain 1, and a stream on channels `{0, 1}` captures both chains, deinterleaved into one buffer per channel. Chain 1 and both chains are research settings, as above |
 | Formats | Native `CS16` with full scale 8192, or `CF32` scaled to ±1 |
-| Sample rate | 40 MSps only |
+| Sample rate | 40 MSps, or 20 MSps through the library's 2:1 halfband (flat to ±8.5 MHz). 20 MSps is single-chain only |
 | Frequency | One `RF` component over the tuning range, retuned live. An out-of-range request is logged and leaves the tuner where it was |
 | Bandwidth | 20 or 40 MHz, rounded to the nearer one. A change during a stream applies at the next stream start |
 | Gain mode | Automatic releases the manual overrides; manual applies the cached codes |

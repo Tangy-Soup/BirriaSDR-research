@@ -469,6 +469,42 @@ static void test_local_recovery(uint32_t rate, bool cancel_gap)
     CHECK(pthread_mutex_destroy(&dev.control_mutex) == 0);
 }
 
+/* Host decimation halves delivered samples per packet; sample offsets and
+ * finite reads count output samples. Interleaved chains cannot be decimated.
+ */
+static void count_decimated(const int16_t *iq, uint32_t count, uint64_t first, void *context)
+{
+    struct observation *observation = context;
+    CHECK(iq && count == 2048 && first == observation->samples);
+    observation->samples += count;
+    if (++observation->callbacks == 3)
+        CHECK(birriasdr_cancel_async(observation->dev) == 0);
+}
+
+static void test_decimation(void)
+{
+    struct model model = {0};
+    birriasdr_dev_t dev = {.backend = &backend, .frequency = 2437000000, .rate = 40000000,
+                          .decimation = 2, .control_mutex = PTHREAD_MUTEX_INITIALIZER};
+    struct observation observation = {.dev = &dev};
+    int16_t samples[2 * 4096];
+    uint32_t received;
+    atomic_init(&dev.run_state, BS_IDLE);
+    atomic_init(&dev.receive_chain, BIRRIASDR_CHAIN_0);
+    dev.io.context = &model;
+    CHECK(birriasdr_get_sample_rate(&dev) == 20000000);
+    CHECK(birriasdr_read_sync(&dev, samples, 4096, &received) == 0);
+    CHECK(received == 4096 && dev.stats.samples == 4096 && dev.stats.packets == 4);
+    CHECK(model.limit == 4);
+    memset(&model, 0, sizeof(model));
+    CHECK(birriasdr_read_async(&dev, count_decimated, &observation, 4, 2048) == 0);
+    CHECK(observation.callbacks == 3 && observation.samples == 3 * 2048);
+    atomic_store(&dev.receive_chain, (unsigned)BIRRIASDR_CHAIN_BOTH);
+    CHECK(birriasdr_read_sync(&dev, samples, 2048, &received) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(atomic_load(&dev.run_state) == BS_IDLE);
+    CHECK(pthread_mutex_destroy(&dev.control_mutex) == 0);
+}
+
 /* Run with no USB access. Each scenario drives the same implementation as users. */
 static void test_rate(uint32_t rate)
 {
@@ -503,6 +539,7 @@ int main(void)
     test_local_recovery(40000000, false);
     test_local_recovery(40000000, true);
     test_rate(40000000);
+    test_decimation();
     puts("stream lifecycle and recovery tests passed");
     return 0;
 }

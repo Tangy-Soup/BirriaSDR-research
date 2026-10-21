@@ -14,6 +14,7 @@
 #define BS_PAYLOAD_BYTES 8192u
 #define BS_PACKET_SAMPLES 2048u
 #define BS_FRAME_BYTES (44u + BS_PAYLOAD_BYTES + 4u)
+#define BS_HALFBAND_HISTORY 46u
 
 enum bs_space { BS_MMIO, BS_UHW, BS_BRIDGE };
 enum bs_run_state { BS_IDLE, BS_RUNNING, BS_CANCELLING, BS_CONTROL_FAILED };
@@ -87,6 +88,8 @@ struct birriasdr_dev {
     uint32_t recovery_limit;
     atomic_uint_fast64_t frequency;
     uint32_t rate;
+    /* Host decimation after capture: 2 halves the hardware rate; 0 or 1 is none. */
+    uint32_t decimation;
     atomic_uint bandwidth;
     atomic_uint packet_detect_suppression;
     atomic_uint receive_chain;
@@ -112,6 +115,13 @@ struct birriasdr_dev {
     } mt7921;
     struct birriasdr_stream_stats stats;
 };
+
+/* 2:1 halfband state: history followed by one packet of input (src/decimate.c). */
+struct bs_halfband {
+    int16_t x[2 * (BS_HALFBAND_HISTORY + BS_PACKET_SAMPLES)];
+};
+void bs_halfband_reset(struct bs_halfband *filter);
+void bs_halfband_run(struct bs_halfband *filter, const int16_t *iq, size_t count, int16_t *out);
 
 typedef int (*bs_payload_fn)(void *context, const uint8_t *payload);
 typedef int (*bs_gap_fn)(void *context, uint32_t state, uint64_t packets);

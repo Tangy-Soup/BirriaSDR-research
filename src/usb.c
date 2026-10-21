@@ -231,6 +231,7 @@ static int claim_device(birriasdr_dev_t *dev, libusb_device *usb, const struct b
     dev->max_frequency = id->max_frequency;
     dev->frequency = dev->backend->default_frequency;
     dev->rate = dev->backend->default_rate;
+    dev->decimation = 1;
     BS_TRY(lock_device(dev, id, usb));
     BS_TRY(bs_usb_error(libusb_open(usb, &dev->handle)));
     BS_TRY(find_interface(dev, usb));

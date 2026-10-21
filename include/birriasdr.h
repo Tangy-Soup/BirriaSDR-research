@@ -216,14 +216,19 @@ int birriasdr_set_center_freq(birriasdr_dev_t *dev, uint64_t frequency_hz);
  */
 uint64_t birriasdr_get_center_freq(const birriasdr_dev_t *dev);
 
-/** Stage complex samples/second. MT7921 accepts 40000000 only at present.
+/** Stage complex samples/second, while idle only. MT7921 captures at 40000000.
  * The sampled span is 40 MHz, with a selectable matched nominal 20 or 40 MHz
  * analog/digital filter profile. This is not a calibrated passband or an
- * alias-rejection guarantee.
+ * alias-rejection guarantee. Half the capture rate (20000000 on MT7921) keeps
+ * the hardware at its rate and decimates 2:1 on the host with a halfband
+ * filter: flat to +/-8.5 MHz, -6 dB at +/-10 MHz and at least 57 dB down from
+ * +/-11.5 MHz, with a fixed 575 ns delay and a 23-sample start transient after
+ * each start or continuity gap. USB traffic is unchanged. Decimation is not
+ * available with BIRRIASDR_CHAIN_BOTH (reads return UNSUPPORTED).
  */
 int birriasdr_set_sample_rate(birriasdr_dev_t *dev, uint32_t samples_per_second);
 
-/** Return the nominal configured complex sample rate, or 0 for NULL. */
+/** Return the nominal configured complex output rate, or 0 for NULL. */
 uint32_t birriasdr_get_sample_rate(const birriasdr_dev_t *dev);
 
 /** Set gain mode: 1 forces the documented gain indices, 0 releases overrides.
@@ -368,6 +373,7 @@ int birriasdr_set_recovery(birriasdr_dev_t *dev, uint32_t max_restarts,
 
 /** Capture an exact finite number of complex samples into I,Q int16_t pairs.
  * count must be a positive multiple of 2048, with room for 2*count int16_t's.
+ * count is in output samples, after any host decimation.
  * *n_read is initialized to zero and reports any prefix even on error. Samples
  * are continuous only within one successful call; consecutive calls restart
  * the acquisition program and must not be concatenated as a continuous stream.

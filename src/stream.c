@@ -22,6 +22,9 @@ struct delivery {
     uint64_t delivered, segment_start;
     uint8_t held[BS_PAYLOAD_BYTES];
     bool holdback, held_valid;
+    /* With host decimation: one decoded packet at the hardware rate. */
+    struct bs_halfband *halfband;
+    int16_t *packet;
 };
 
 /* Deliver only complete validated samples. A short final buffer is allowed;
@@ -39,11 +42,20 @@ static void flush_samples(struct delivery *delivery)
 
 /* Reorder one complete raw Q,I payload into public I,Q pairs. The fixed
  * format supplies 2048 samples; callback capacity is a whole number of packets.
+ * With host decimation the packet passes through the halfband first and
+ * yields 1024 output samples, which still divides the capacity.
  */
 static int decode_payload(struct delivery *delivery, const uint8_t *raw)
 {
-    BS_TRY(bs_decode_iq(raw, delivery->iq + 2u * delivery->used, BS_PACKET_SAMPLES));
-    delivery->used += BS_PACKET_SAMPLES;
+    if (delivery->halfband) {
+        BS_TRY(bs_decode_iq(raw, delivery->packet, BS_PACKET_SAMPLES));
+        bs_halfband_run(delivery->halfband, delivery->packet, BS_PACKET_SAMPLES,
+                        delivery->iq + 2u * delivery->used);
+        delivery->used += BS_PACKET_SAMPLES / 2;
+    } else {
+        BS_TRY(bs_decode_iq(raw, delivery->iq + 2u * delivery->used, BS_PACKET_SAMPLES));
+        delivery->used += BS_PACKET_SAMPLES;
+    }
     if (delivery->used == delivery->capacity)
         flush_samples(delivery);
     return 0;
@@ -87,6 +99,9 @@ static int receive_gap(void *context, uint32_t state, uint64_t packets)
     birriasdr_dev_t *dev = delivery->dev;
     delivery->held_valid = false;
     flush_samples(delivery);
+    /* Never filter across the gap. */
+    if (delivery->halfband)
+        bs_halfband_reset(delivery->halfband);
     struct birriasdr_recovery_event event = {
         .next_sample = delivery->delivered, .attempt = next_attempt(delivery),
         .error = BIRRIASDR_ERROR_OVERRUN, .previous = dev->stats
@@ -269,6 +284,8 @@ static int capture_once(struct delivery *delivery, uint8_t *bytes, uint32_t dept
     delivery->segment_start = delivery->delivered;
     delivery->holdback = !packets && dev->recovery_limit && dev->recovery_callback;
     delivery->held_valid = false;
+    if (delivery->halfband)
+        bs_halfband_reset(delivery->halfband);
     pthread_mutex_lock(&dev->control_mutex);
     dev->control_ready = false;
     dev->control_error = 0;
@@ -385,6 +402,9 @@ int bs_stream(birriasdr_dev_t *dev, birriasdr_read_async_cb_t callback,
     if (!buffer_samples) buffer_samples = 16384;
     if (depth < 4 || depth > 256 || buffer_samples > 262144 || buffer_samples % BS_PACKET_SAMPLES)
         return BIRRIASDR_ERROR_INVALID;
+    /* Interleaved chains would need one filter per chain; not implemented. */
+    if (dev->decimation > 1 && atomic_load(&dev->receive_chain) == BIRRIASDR_CHAIN_BOTH)
+        return BIRRIASDR_ERROR_UNSUPPORTED;
     pthread_mutex_lock(&dev->control_mutex);
     if (!atomic_compare_exchange_strong(&dev->run_state, &idle, BS_RUNNING)) {
         pthread_mutex_unlock(&dev->control_mutex);
@@ -398,7 +418,12 @@ int bs_stream(birriasdr_dev_t *dev, birriasdr_read_async_cb_t callback,
                                 .capacity = buffer_samples};
     delivery.iq = calloc((size_t)buffer_samples * 2, sizeof(*delivery.iq));
     bytes = malloc(BS_USB_BYTES);
-    if (delivery.iq && bytes) {
+    if (dev->decimation > 1) {
+        delivery.halfband = malloc(sizeof(*delivery.halfband));
+        delivery.packet = malloc(sizeof(*delivery.packet) * 2 * BS_PACKET_SAMPLES);
+    }
+    if (delivery.iq && bytes &&
+        (dev->decimation <= 1 || (delivery.halfband && delivery.packet))) {
         for (;;) {
             bool can_retry;
             result = capture_once(&delivery, bytes, depth, packets, &can_retry);
@@ -426,6 +451,8 @@ int bs_stream(birriasdr_dev_t *dev, birriasdr_read_async_cb_t callback,
     dev->stats.usb_bytes = total_bytes;
     free(bytes);
     free(delivery.iq);
+    free(delivery.halfband);
+    free(delivery.packet);
     pthread_mutex_lock(&dev->control_mutex);
     dev->stream_continuous = false;
     atomic_store(&dev->run_state, BS_IDLE);

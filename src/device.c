@@ -216,20 +216,31 @@ uint64_t birriasdr_get_center_freq(const birriasdr_dev_t *dev)
 }
 
 /* Capture-clock programming for higher rates is deliberately not inferred from
- * the earlier vendor-firmware experiments. No host decimator is hidden here.
+ * the earlier vendor-firmware experiments. Half the hardware rate is the one
+ * explicit host-side exception: a 2:1 halfband after capture (src/decimate.c).
  */
 int birriasdr_set_sample_rate(birriasdr_dev_t *dev, uint32_t rate)
 {
     BS_TRY(require_idle(dev));
+    if (rate && rate <= UINT32_MAX / 2 &&
+        dev->backend->validate(dev->frequency, rate, &dev->gain) == BIRRIASDR_ERROR_UNSUPPORTED &&
+        dev->backend->validate(dev->frequency, rate * 2, &dev->gain) == 0) {
+        dev->rate = rate * 2;
+        dev->decimation = 2;
+        return 0;
+    }
     BS_TRY(dev->backend->validate(dev->frequency, rate, &dev->gain));
     dev->rate = rate;
+    dev->decimation = 1;
     return 0;
 }
 
-/* The nominal complex rate is configuration metadata, not measured timing. */
+/* The nominal complex output rate is configuration metadata, not measured timing. */
 uint32_t birriasdr_get_sample_rate(const birriasdr_dev_t *dev)
 {
-    return dev ? dev->rate : 0;
+    if (!dev)
+        return 0;
+    return dev->decimation > 1 ? dev->rate / dev->decimation : dev->rate;
 }
 
 /* The caller holds control_mutex across validation, the complete hardware
@@ -527,12 +538,15 @@ static void copy_sync(const int16_t *iq, uint32_t count, uint64_t first, void *c
 int birriasdr_read_sync(birriasdr_dev_t *dev, int16_t *iq, uint32_t count, uint32_t *n_read)
 {
     struct sync_buffer buffer = {iq, count, 0};
+    uint32_t decimation;
     int result;
     if (n_read)
         *n_read = 0;
     if (!dev || !iq || !n_read || !count || count % BS_PACKET_SAMPLES)
         return BIRRIASDR_ERROR_INVALID;
-    result = bs_stream(dev, copy_sync, &buffer, 64, 16384, count / BS_PACKET_SAMPLES);
+    decimation = dev->decimation > 1 ? dev->decimation : 1;
+    result = bs_stream(dev, copy_sync, &buffer, 64, 16384,
+                       (uint32_t)((uint64_t)count * decimation / BS_PACKET_SAMPLES));
     *n_read = buffer.received;
     if (!result && buffer.received != count)
         return BIRRIASDR_ERROR_PROTOCOL;
