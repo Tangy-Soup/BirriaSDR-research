@@ -212,12 +212,15 @@ static void test_api(void)
     atomic_init(&dev.bandwidth, dev.backend->default_bandwidth);
     atomic_init(&dev.packet_detect_suppression, 0);
     atomic_init(&dev.receive_chain, 0);
+    atomic_init(&dev.channel_filter, 0);
     CHECK(id && id->backend->chipset == BIRRIASDR_CHIP_MT7925 && !id->qualified);
     dev.backend = id->backend;
     CHECK(birriasdr_set_packet_detect_suppression(&dev, 1) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_get_packet_detect_suppression(&dev) == 0);
     CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_1) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_get_receive_chain(&dev) == BIRRIASDR_CHAIN_0);
+    CHECK(birriasdr_set_channel_filter(&dev, 1) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_get_channel_filter(&dev) == 0);
     dev.backend = &bs_mt7921_backend;
     CHECK(id->backend->prepare(&dev, 0) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_set_tuner_gain(&dev, 100) == BIRRIASDR_ERROR_UNSUPPORTED);
@@ -246,6 +249,11 @@ static void test_api(void)
     CHECK(birriasdr_get_receive_chain(&dev) == BIRRIASDR_CHAIN_BOTH);
     CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_1) == 0);
     CHECK(birriasdr_get_receive_chain(&dev) == BIRRIASDR_CHAIN_1);
+    CHECK(birriasdr_get_capabilities(&dev) & BIRRIASDR_CAP_CHANNEL_FILTER);
+    CHECK(birriasdr_get_channel_filter(NULL) == 0);
+    CHECK(birriasdr_set_channel_filter(NULL, 1) == BIRRIASDR_ERROR_INVALID);
+    CHECK(birriasdr_set_channel_filter(&dev, 3) == 0);
+    CHECK(birriasdr_get_channel_filter(&dev) == 1);
     CHECK(birriasdr_set_center_freq(&dev, UINT64_C(3000000000)) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_set_center_freq(&dev, UINT64_C(4499999999)) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_set_center_freq(&dev, UINT64_C(6200000001)) == BIRRIASDR_ERROR_UNSUPPORTED);
@@ -313,6 +321,8 @@ static void test_api(void)
     CHECK(birriasdr_get_packet_detect_suppression(&dev) == 1);
     CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_0) == BIRRIASDR_ERROR_BUSY);
     CHECK(birriasdr_get_receive_chain(&dev) == BIRRIASDR_CHAIN_1);
+    CHECK(birriasdr_set_channel_filter(&dev, 0) == BIRRIASDR_ERROR_BUSY);
+    CHECK(birriasdr_get_channel_filter(&dev) == 1);
     CHECK(birriasdr_close(&dev) == BIRRIASDR_ERROR_BUSY);
     CHECK(pthread_mutex_destroy(&dev.control_mutex) == 0);
 }

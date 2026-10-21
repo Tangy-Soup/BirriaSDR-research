@@ -90,6 +90,7 @@ int birriasdr_open(birriasdr_dev_t **out, uint32_t index)
     atomic_store(&dev->bandwidth, dev->backend->default_bandwidth);
     atomic_store(&dev->packet_detect_suppression, 0u);
     atomic_store(&dev->receive_chain, (unsigned)BIRRIASDR_CHAIN_0);
+    atomic_store(&dev->channel_filter, 0u);
     *out = dev;
     return 0;
 }
@@ -404,6 +405,25 @@ int birriasdr_set_receive_chain(birriasdr_dev_t *dev, int chain)
 int birriasdr_get_receive_chain(const birriasdr_dev_t *dev)
 {
     return dev ? (int)atomic_load(&dev->receive_chain) : BIRRIASDR_CHAIN_0;
+}
+
+/* Stage the capture point for the next preparation; never a live control. */
+int birriasdr_set_channel_filter(birriasdr_dev_t *dev, int enabled)
+{
+    int result;
+    if (!dev) return BIRRIASDR_ERROR_INVALID;
+    pthread_mutex_lock(&dev->control_mutex);
+    result = require_idle(dev);
+    if (!result && !(dev->backend->capabilities & BIRRIASDR_CAP_CHANNEL_FILTER))
+        result = BIRRIASDR_ERROR_UNSUPPORTED;
+    if (!result) atomic_store(&dev->channel_filter, enabled ? 1u : 0u);
+    pthread_mutex_unlock(&dev->control_mutex);
+    return result;
+}
+
+int birriasdr_get_channel_filter(const birriasdr_dev_t *dev)
+{
+    return dev && atomic_load(&dev->channel_filter) ? 1 : 0;
 }
 
 /* TODO: establish crystal/PLL correction without changing sample interpretation. */

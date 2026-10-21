@@ -90,6 +90,7 @@ struct birriasdr_dev {
     atomic_uint bandwidth;
     atomic_uint packet_detect_suppression;
     atomic_uint receive_chain;
+    atomic_uint channel_filter;
     bool manual;
     struct birriasdr_gain gain;
     uint32_t nonce;
@@ -106,8 +107,8 @@ struct birriasdr_dev {
         bool band_valid;
         uint32_t detect_baseline;
         bool detect_saved;
-        uint32_t chain_baseline[3];
-        unsigned chain_saved;
+        uint32_t chain_baseline[3], chain_mask[3];
+        bool chain_saved;
     } mt7921;
     struct birriasdr_stream_stats stats;
 };

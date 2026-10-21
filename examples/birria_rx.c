@@ -134,7 +134,7 @@ int main(int argc, char **argv)
      */
     uint64_t discard = 11719 * 2048;
     int result, close_result, argument = 1, explicit_gain = 0, buffered = 0;
-    int pd_n8 = 0, explicit_discard = 0, chain = BIRRIASDR_CHAIN_0;
+    int pd_n8 = 0, explicit_discard = 0, chain = BIRRIASDR_CHAIN_0, channel_filter = 0;
     if (argc == 2 && !strcmp(argv[1], "--list"))
         return list_devices();
     while (argument < argc && !strncmp(argv[argument], "--", 2)) {
@@ -147,6 +147,9 @@ int main(int argc, char **argv)
             argument += 2;
         } else if (!strcmp(argv[argument], "--pd-n8")) {
             pd_n8 = 1;
+            ++argument;
+        } else if (!strcmp(argv[argument], "--channel-filter")) {
+            channel_filter = 1;
             ++argument;
         } else if (!strcmp(argv[argument], "--chain") && argument + 1 < argc) {
             if (!strcmp(argv[argument + 1], "0")) chain = BIRRIASDR_CHAIN_0;
@@ -181,7 +184,7 @@ int main(int argc, char **argv)
         }
     }
     if (argc - argument < 1 || argc - argument > 3) {
-        fprintf(stderr, "Usage: %s --list | [--buffered] [--frequency Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--chain 0|1|both] [--discard SAMPLES] output.cs16 [complex-samples [manual]]\n", argv[0]);
+        fprintf(stderr, "Usage: %s --list | [--buffered] [--frequency Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--chain 0|1|both] [--discard SAMPLES] output.cs16 [complex-samples [manual]]\n", argv[0]);
         return 1;
     }
     if (argc - argument >= 2 && parse_number(argv[argument + 1], &recorder.limit))
@@ -226,6 +229,14 @@ int main(int argc, char **argv)
         result = birriasdr_set_packet_detect_suppression(dev, 1);
         if (result < 0) {
             fprintf(stderr, "Packet-detect suppression: %s\n", birriasdr_strerror(result));
+            birriasdr_close(dev);
+            return 1;
+        }
+    }
+    if (channel_filter) {
+        result = birriasdr_set_channel_filter(dev, 1);
+        if (result < 0) {
+            fprintf(stderr, "Channel filter: %s\n", birriasdr_strerror(result));
             birriasdr_close(dev);
             return 1;
         }

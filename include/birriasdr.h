@@ -52,7 +52,8 @@ enum birriasdr_capability {
     BIRRIASDR_CAP_TUNING = 1u << 8,
     BIRRIASDR_CAP_LIVE_TUNING = 1u << 9,
     BIRRIASDR_CAP_PD_SUPPRESS = 1u << 10,
-    BIRRIASDR_CAP_CHAIN_SELECT = 1u << 11
+    BIRRIASDR_CAP_CHAIN_SELECT = 1u << 11,
+    BIRRIASDR_CAP_CHANNEL_FILTER = 1u << 12
 };
 
 /** Receive chains for birriasdr_set_receive_chain(). */
@@ -309,6 +310,21 @@ int birriasdr_set_receive_chain(birriasdr_dev_t *dev, int chain);
 
 /** Return the staged or active receive chain; BIRRIASDR_CHAIN_0 for NULL. */
 int birriasdr_get_receive_chain(const birriasdr_dev_t *dev);
+
+/** Stage the capture point after the PHY's digital channel filter, while idle.
+ * Nonzero enables it; zero (the default) keeps the backend's unfiltered tap.
+ * With CAP_CHANNEL_FILTER, single-chain captures then follow the digital
+ * channel filter, whose width tracks birriasdr_set_tuner_bandwidth(). At the
+ * 20 MHz profile this lowered the floor 10-15 MHz off centre by about 13 dB on
+ * the tested board; at 40 MHz it reduces aliasing but does not remove it.
+ * Rate and sample format are unchanged, and both-chain captures already use
+ * the filtered point. Returns UNSUPPORTED without the capability and BUSY
+ * while a read is active.
+ */
+int birriasdr_set_channel_filter(birriasdr_dev_t *dev, int enabled);
+
+/** Return 1 if the channel-filter capture point is staged or active, otherwise 0. */
+int birriasdr_get_channel_filter(const birriasdr_dev_t *dev);
 
 /** Reserved: oscillator correction in ppm. UNSUPPORTED; no software DDC added. */
 int birriasdr_set_freq_correction(birriasdr_dev_t *dev, int ppm);

@@ -581,6 +581,16 @@ public:
             pd.type = SoapySDR::ArgInfo::BOOL;
             settings.push_back(pd);
         }
+        if (caps_ & BIRRIASDR_CAP_CHANNEL_FILTER) {
+            SoapySDR::ArgInfo filter;
+            filter.key = "channel_filter";
+            filter.value = "false";
+            filter.name = "Channel filter";
+            filter.description = "Capture after the PHY's digital channel filter, which follows the bandwidth "
+                                 "profile; best with the 20 MHz profile. Applies at the next stream start";
+            filter.type = SoapySDR::ArgInfo::BOOL;
+            settings.push_back(filter);
+        }
         SoapySDR::ArgInfo restarts;
         restarts.key = "max_restarts";
         restarts.value = std::to_string(DEFAULT_MAX_RESTARTS);
@@ -602,6 +612,14 @@ public:
                 applyStaged();
             else
                 SoapySDR::log(SOAPY_SDR_WARNING, "BirriaSDR: packet-detect suppression applies at the next stream start");
+        } else if (key == "channel_filter") {
+            if (!(caps_ & BIRRIASDR_CAP_CHANNEL_FILTER))
+                throw std::runtime_error("BirriaSDR: channel filter is unsupported");
+            staged_filter_ = parse_flag(value) ? 1 : 0;
+            if (!reader_.joinable())
+                applyStaged();
+            else
+                SoapySDR::log(SOAPY_SDR_WARNING, "BirriaSDR: channel filter applies at the next stream start");
         } else if (key == "max_restarts") {
             max_restarts_ = (unsigned)std::stoul(value);
         } else {
@@ -613,6 +631,10 @@ public:
     {
         if (key == "packet_detect_suppression") {
             int enabled = staged_pd_ >= 0 ? staged_pd_ : birriasdr_get_packet_detect_suppression(dev_);
+            return enabled ? "true" : "false";
+        }
+        if (key == "channel_filter") {
+            int enabled = staged_filter_ >= 0 ? staged_filter_ : birriasdr_get_channel_filter(dev_);
             return enabled ? "true" : "false";
         }
         if (key == "max_restarts")
@@ -704,6 +726,10 @@ private:
             check(birriasdr_set_packet_detect_suppression(dev_, staged_pd_), "packet-detect suppression");
             staged_pd_ = -1;
         }
+        if (staged_filter_ >= 0) {
+            check(birriasdr_set_channel_filter(dev_, staged_filter_), "channel filter");
+            staged_filter_ = -1;
+        }
     }
 
     /* cancel_async returns STATE until read_async has started, so retry until
@@ -736,6 +762,7 @@ private:
     std::atomic<bool> manual_{false};
     uint32_t staged_bandwidth_ = 0;
     int staged_pd_ = -1;
+    int staged_filter_ = -1;
     unsigned max_restarts_ = DEFAULT_MAX_RESTARTS;
 
     bool stream_open_ = false;

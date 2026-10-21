@@ -3,7 +3,7 @@
  */
 
 /*
- * MT7961/MT7972 receive-chain selection (research setting, opt-in)
+ * MT7961/MT7972 receive-chain and capture-stage selection (opt-in)
  *
  * The die has two receivers. Chain 0 (WF0) is physical RF SPI port 1. Chain 1
  * (WF1) is physical SPI port 0, the companion bank whose secondary synthesizer
@@ -41,12 +41,24 @@
  * steps by ~6 dB within a capture, as AGC would. Evidence and limits are in
  * docs/mt7921.md and captures/research_20261019_tenth_round in the workspace.
  *
+ * The optional channel filter (birriasdr_set_channel_filter()) moves a
+ * single-chain capture from stage 1 to stage 3 of the same tap map: tap 12 for
+ * chain 0, 13 for chain 1. Stage 3 follows the PHY's digital channel filter,
+ * whose width tracks the bandwidth class 0x83081000[27:24]. In 18 paired
+ * captures at the 20 MHz profile, tap 12 lowered the floor 10-15 MHz off
+ * centre by about 13 dB against tap 4, with 8% more FCS-valid OFDM frames and
+ * the same sample format. At the 40 MHz profile both taps are flat to +/-20 MHz
+ * and tap 12 only reduces aliasing; it does not remove it. Mtk79ICAP streams
+ * tap 12/13 by default under the vendor firmware. Both-chain capture already
+ * reads stage 3 (node 0x0c), so the setting changes nothing there.
+ *
  * Apply once per preparation, after packet-detect suppression and before GO.
  * Save each word first, change only the selected fields, verify by readback,
  * and roll back on partial failure. mt_reset() restores the fields first,
  * before the other restores and the WFSYS reset. A failed restoration keeps
  * the saved state for retry. Receive-only and volatile: no flash, eFuse or
- * transmit state is touched. Chain 0 performs no register access at all.
+ * transmit state is touched. Chain 0 without the channel filter performs no
+ * register access at all.
  */
 #include "mt7921.h"
 
@@ -54,15 +66,31 @@
 
 /* Field 0 is RF SPI port 0 (WF1's receiver); fields 1 and 2 are MMIO. */
 static const uint32_t chain_addresses[MT_CHAIN_FIELDS] = {0x1e4, 0x830ad440, 0x830ad448};
-/* Indexed by chain - 1: chain 1 alone, then both chains. Zero masks are unused. */
-static const uint32_t chain_masks[2][MT_CHAIN_FIELDS] = {
-    {0xffffffff, 0, 0x00000f00},
-    {0xffffffff, 0xff, 0x033f00ff}
-};
-static const uint32_t chain_values[2][MT_CHAIN_FIELDS] = {
-    {0x0001fbc3, 0, 0x00000500},
-    {0x0001fbc3, 0x11, 0x0023000c}
-};
+#define MT_WF1_RECEIVE 0x0001fbc3u
+#define MT_TAP_MASK 0x00000f00u
+#define MT_TAP(stage, kind) ((uint32_t)((stage) * 4u + (kind)) << 8)
+
+/* Fill the fields one selection changes; zero masks are left untouched. */
+static void chain_selection(unsigned chain, bool filtered, uint32_t masks[MT_CHAIN_FIELDS],
+                            uint32_t values[MT_CHAIN_FIELDS])
+{
+    unsigned stage = filtered ? 3 : 1;
+    for (unsigned field = 0; field < MT_CHAIN_FIELDS; ++field)
+        masks[field] = values[field] = 0;
+    if (chain != BIRRIASDR_CHAIN_0) {
+        masks[0] = 0xffffffff;
+        values[0] = MT_WF1_RECEIVE;
+    }
+    if (chain == BIRRIASDR_CHAIN_BOTH) {
+        masks[1] = 0xff;
+        values[1] = 0x11;
+        masks[2] = 0x033f00ff;
+        values[2] = 0x0023000c;
+    } else if (chain == BIRRIASDR_CHAIN_1 || filtered) {
+        masks[2] = MT_TAP_MASK;
+        values[2] = MT_TAP(stage, chain);
+    }
+}
 
 static int chain_read(birriasdr_dev_t *dev, unsigned field, uint32_t *value)
 {
@@ -88,40 +116,42 @@ static int chain_write(birriasdr_dev_t *dev, unsigned field, uint32_t mask, uint
  */
 int mt_restore_chain(birriasdr_dev_t *dev)
 {
-    unsigned chain = dev->mt7921.chain_saved;
     int first_error = 0;
-    if (!chain)
+    if (!dev->mt7921.chain_saved)
         return 0;
     for (unsigned field = MT_CHAIN_FIELDS; field-- > 0;) {
-        uint32_t mask = chain_masks[chain - 1][field];
+        uint32_t mask = dev->mt7921.chain_mask[field];
         int result = mask ? chain_write(dev, field, mask, dev->mt7921.chain_baseline[field]) : 0;
         if (result < 0 && !first_error)
             first_error = result;
     }
     if (!first_error)
-        dev->mt7921.chain_saved = 0;
+        dev->mt7921.chain_saved = false;
     return first_error;
 }
 
 int mt_configure_chain(birriasdr_dev_t *dev)
 {
-    uint32_t before[MT_CHAIN_FIELDS] = {0};
+    uint32_t before[MT_CHAIN_FIELDS] = {0}, masks[MT_CHAIN_FIELDS], values[MT_CHAIN_FIELDS];
     unsigned chain = atomic_load(&dev->receive_chain);
-    if (chain == BIRRIASDR_CHAIN_0)
-        return 0;
+    bool filtered = atomic_load(&dev->channel_filter) != 0;
     if (chain > BIRRIASDR_CHAIN_BOTH)
         return BIRRIASDR_ERROR_INVALID;
+    if (chain == BIRRIASDR_CHAIN_0 && !filtered)
+        return 0;
     if (dev->mt7921.chain_saved)
         return BIRRIASDR_ERROR_STATE;
+    chain_selection(chain, filtered, masks, values);
     for (unsigned field = 0; field < MT_CHAIN_FIELDS; ++field)
-        if (chain_masks[chain - 1][field])
+        if (masks[field])
             BS_TRY(chain_read(dev, field, &before[field]));
-    for (unsigned field = 0; field < MT_CHAIN_FIELDS; ++field)
-        dev->mt7921.chain_baseline[field] = before[field];
-    dev->mt7921.chain_saved = chain;
     for (unsigned field = 0; field < MT_CHAIN_FIELDS; ++field) {
-        uint32_t mask = chain_masks[chain - 1][field];
-        int result = mask ? chain_write(dev, field, mask, chain_values[chain - 1][field]) : 0;
+        dev->mt7921.chain_baseline[field] = before[field];
+        dev->mt7921.chain_mask[field] = masks[field];
+    }
+    dev->mt7921.chain_saved = true;
+    for (unsigned field = 0; field < MT_CHAIN_FIELDS; ++field) {
+        int result = masks[field] ? chain_write(dev, field, masks[field], values[field]) : 0;
         if (result < 0)
             return mt_restore_chain(dev) < 0 ? BIRRIASDR_ERROR_STATE : result;
     }

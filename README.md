@@ -77,7 +77,7 @@ For more detail, see:
 | Frequency tuning | 2156 to 2610 MHz, or 2190 to 2610 MHz on generic-ID boards, and 4500 to 6200 MHz, including live changes and band switches. Sensitivity is unverified; 5 GHz reception was checked from 5250 to 5815 MHz |
 | Tuning step | Nominally 28.61 Hz, using the full 20-bit fraction. Requests are in whole hertz with no Wi-Fi channel restriction. The physical response to fine steps is still unmeasured |
 | Sample rate | 40 MSps complex, fixed |
-| Receive filter profiles | Nominal 20 or 40 MHz, selected while idle. Both keep 40 MSps and the same USB traffic; default is 40 MHz |
+| Receive filter profiles | Nominal 20 or 40 MHz, selected while idle. Both keep 40 MSps and the same USB traffic; default is 40 MHz. Opt-in `--channel-filter` captures after the PHY's digital channel filter, which follows the profile: at 20 MHz it lowered the floor 10–15 MHz off centre by about 13 dB. See [channel filter](docs/mt7921.md#channel-filter) |
 | Sampled bandwidth | 40 MHz span with matching nominal 40 MHz analog and digital settings. See [filter characteristics](docs/mt7921.md#filtering) for rolloff and aliasing limits |
 | Sample resolution | Signed 14-bit I and Q, from −8192 to 8191 |
 | Receive channels | Chain 0 by default. Opt-in research setting (`--chain 1` or `--chain both`) for the second receiver alone or both chains interleaved. See [receive-chain selection](docs/mt7921.md#receive-chain-selection) |
@@ -171,6 +171,15 @@ detector settles) and still writes the requested count. With `--buffered`, the
 requested count plus the discard must fit within 80,000,000 samples.
 `--discard SAMPLES` sets the discard explicitly, in multiples of 2048 when
 buffered, and also works without `--pd-n8`.
+
+To isolate one Wi-Fi channel with the PHY's digital channel filter:
+
+```sh
+./build/birria_rx --buffered --frequency 2462000000 --bandwidth 20000000 --channel-filter --gain 3 8 0 ch11.cs16 20000768 manual
+```
+
+`--channel-filter` moves the capture to the channel-filtered tap. Use it with
+the 20 MHz profile; at 40 MHz it only reduces aliasing.
 
 To capture the second receiver (chain 1) instead, or both chains at once
 (opt-in research setting, see
@@ -357,7 +366,7 @@ directory.
 | Gain mode | Automatic releases the manual overrides; manual applies the cached codes |
 | Gain elements | `LNA` 0–3, `LPF` 0–8 and `DIG` 0–12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode |
 | Antenna | `RX` only |
-| Settings | `packet_detect_suppression` (applies at the next stream start; discard about the first 250 ms) and `max_restarts` (recovery budget, default 16) |
+| Settings | `packet_detect_suppression` (applies at the next stream start; discard about the first 250 ms), `channel_filter` (capture after the digital channel filter; applies at the next stream start) and `max_restarts` (recovery budget, default 16) |
 | Stream arguments | `bufflen` (complex samples per USB buffer, default 65536), `buffers` (host ring depth, default 64) and `transfers` (queued USB transfers) |
 
 The module uses automatic recovery. Each source gap, recovered fault or buffer
