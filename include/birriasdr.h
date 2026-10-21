@@ -224,7 +224,10 @@ uint64_t birriasdr_get_center_freq(const birriasdr_dev_t *dev);
  * filter: flat to +/-8.5 MHz, -6 dB at +/-10 MHz and at least 57 dB down from
  * +/-11.5 MHz, with a fixed 575 ns delay and a 23-sample start transient after
  * each start or continuity gap. USB traffic is unchanged. Decimation is not
- * available with BIRRIASDR_CHAIN_BOTH (reads return UNSUPPORTED).
+ * available with BIRRIASDR_CHAIN_BOTH (reads return UNSUPPORTED). Measured
+ * against Wi-Fi beacon timestamps and carrier offsets, the MT7921 sample clock
+ * and LO share one reference within 0.5 ppm, so the nominal rate is exact up
+ * to the crystal's tolerance.
  */
 int birriasdr_set_sample_rate(birriasdr_dev_t *dev, uint32_t samples_per_second);
 

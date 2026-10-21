@@ -76,7 +76,7 @@ For more detail, see:
 | Hardware | COMFAST dongle `3574:6211`, or a board with MediaTek's generic ID `0e8d:7961`, with an MT7961 digital die and an MT7972 analog die |
 | Frequency tuning | 2156 to 2610 MHz, or 2190 to 2610 MHz on generic-ID boards, and 4500 to 6200 MHz, including live changes and band switches. Sensitivity is unverified; 5 GHz reception was checked from 5250 to 5815 MHz |
 | Tuning step | Nominally 28.61 Hz, using the full 20-bit fraction. Requests are in whole hertz with no Wi-Fi channel restriction. The physical response to fine steps is still unmeasured |
-| Sample rate | 40 MSps complex capture. 20 MSps output is also available through a 2:1 halfband on the host (`--rate 20000000`), flat to ±8.5 MHz; USB traffic is unchanged. |
+| Sample rate | 40 MSps complex capture. 20 MSps output is also available through a 2:1 halfband on the host (`--rate 20000000`), flat to ±8.5 MHz; USB traffic is unchanged. The sample clock and LO share one reference within 0.5 ppm (measured against Wi-Fi beacon timestamps), so 40 MSps is exact up to the crystal's tolerance |
 | Receive filter profiles | Nominal 20 or 40 MHz, selected while idle. Both keep 40 MSps and the same USB traffic; default is 40 MHz. Opt-in `--channel-filter` captures after the PHY's digital channel filter, which follows the profile: at 20 MHz it lowered the floor 10–15 MHz off centre by about 13 dB. See [channel filter](docs/mt7921.md#channel-filter) |
 | Sampled bandwidth | 40 MHz span with matching nominal 40 MHz analog and digital settings. See [filter characteristics](docs/mt7921.md#filtering) for rolloff and aliasing limits |
 | Sample resolution | Signed 14-bit I and Q, from −8192 to 8191 |
