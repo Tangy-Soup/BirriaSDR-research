@@ -5,11 +5,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* macOS can delay USB completions long enough to drain 64 queued transfers. */
+/* macOS can delay USB completions long enough to drain 64 queued transfers.
+ * Elsewhere, 192 rides out host completion stalls of 15-18 ms (seen over
+ * usbipd): each completion carries one 32,960-byte aggregate, so 64 transfers
+ * covered only about 7 ms at 80 MSps. 192 x 64 KiB stays inside Linux's
+ * default 16 MB usbfs limit; 256 would need all of it.
+ */
 #ifdef __APPLE__
 #define BS_DEFAULT_DEPTH 256u
 #else
-#define BS_DEFAULT_DEPTH 64u
+#define BS_DEFAULT_DEPTH 192u
 #endif
 
 struct delivery {

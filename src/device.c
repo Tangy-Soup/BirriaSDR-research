@@ -38,6 +38,8 @@ const char *birriasdr_strerror(int error)
     case BIRRIASDR_ERROR_PROTOCOL: return "invalid, missing, or stale stream data";
     case BIRRIASDR_ERROR_OVERRUN: return "capture continuity lost to device or host queue overrun";
     case BIRRIASDR_ERROR_STATE: return "unexpected hardware or receiver state";
+    case BIRRIASDR_ERROR_USB_MEMORY:
+        return "USB transfer memory limit reached (Linux: raise usbcore usbfs_memory_mb or use fewer transfers)";
     default: return "unknown library error";
     }
 }
@@ -532,8 +534,9 @@ static void copy_sync(const int16_t *iq, uint32_t count, uint64_t first, void *c
     buffer->received += count;
 }
 
-/* Finite reads use the same queued USB engine and packet validation as async.
- * Requiring whole payloads avoids discarding unseen samples at the last packet.
+/* Finite reads use the same queued USB engine, default queue depth and packet
+ * validation as async. Requiring whole payloads avoids discarding unseen
+ * samples at the last packet.
  */
 int birriasdr_read_sync(birriasdr_dev_t *dev, int16_t *iq, uint32_t count, uint32_t *n_read)
 {
@@ -545,7 +548,7 @@ int birriasdr_read_sync(birriasdr_dev_t *dev, int16_t *iq, uint32_t count, uint3
     if (!dev || !iq || !n_read || !count || count % BS_PACKET_SAMPLES)
         return BIRRIASDR_ERROR_INVALID;
     decimation = dev->decimation > 1 ? dev->decimation : 1;
-    result = bs_stream(dev, copy_sync, &buffer, 64, 16384,
+    result = bs_stream(dev, copy_sync, &buffer, 0, 16384,
                        (uint32_t)((uint64_t)count * decimation / BS_PACKET_SAMPLES));
     *n_read = buffer.received;
     if (!result && buffer.received != count)

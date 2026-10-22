@@ -20,7 +20,7 @@ enum fault { NONE, CREATE, PREPARE, SUBMIT, START, STOP, STATUS, RESET,
              OVERRUN_RESET_ERROR, OVERRUN_DMA_ERROR, TIMING_OVERRUN };
 struct model {
     enum fault fault;
-    unsigned resets, starts, stops, created, destroyed;
+    unsigned resets, starts, stops, created, destroyed, depth;
     uint32_t limit, generated, terminal;
     bool started, stopped, tune_called;
     unsigned preparations;
@@ -46,6 +46,7 @@ int bs_reader_create(birriasdr_dev_t *dev, unsigned depth, struct bs_reader **ou
 {
     struct model *model = dev->io.context;
     CHECK(depth >= 4 && depth <= 256);
+    model->depth = depth;
     *out = NULL;
     if (model->fault == CREATE) return BIRRIASDR_ERROR_NO_MEMORY;
     *out = calloc(1, sizeof(**out));
@@ -265,6 +266,12 @@ static void test_case(enum fault fault, int expected, uint32_t rate)
     CHECK(birriasdr_read_sync(&dev, samples, 2048, &received) == 0);
     CHECK(received == 2048 && dev.stats.samples == 2048 && dev.stats.packets == 1);
     CHECK(!dev.control_error && !dev.touched && model.resets == 1);
+    /* Default queue depth: 192 rides out 15-18 ms host stalls at 80 MSps. */
+#ifdef __APPLE__
+    CHECK(model.depth == 256);
+#else
+    CHECK(model.depth == 192);
+#endif
     CHECK(pthread_mutex_destroy(&dev.control_mutex) == 0);
 }
 

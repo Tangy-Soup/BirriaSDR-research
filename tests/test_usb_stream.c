@@ -14,6 +14,7 @@ static struct {
     struct request pending[256];
     unsigned count, allocated, freed, submitted, fail_submit, completions, limit;
     unsigned allocations, fail_allocation;
+    int submit_error;
     enum libusb_transfer_status status;
 } mock = {.mutex = PTHREAD_MUTEX_INITIALIZER};
 
@@ -65,7 +66,7 @@ int LIBUSB_CALL libusb_submit_transfer(struct libusb_transfer *transfer)
     pthread_mutex_lock(&mock.mutex);
     if (++mock.submitted == mock.fail_submit) {
         pthread_mutex_unlock(&mock.mutex);
-        return LIBUSB_ERROR_IO;
+        return mock.submit_error;
     }
     CHECK(mock.count < 256);
     mock.pending[mock.count++] = (struct request){transfer, false};
@@ -127,6 +128,7 @@ static void reset_mock(unsigned limit, unsigned fail_submit)
     mock.allocated = mock.freed = mock.submitted = mock.completions = 0;
     mock.allocations = mock.fail_allocation = 0;
     mock.status = LIBUSB_TRANSFER_COMPLETED;
+    mock.submit_error = LIBUSB_ERROR_IO;
     mock.limit = limit;
     mock.fail_submit = fail_submit;
 }
@@ -241,6 +243,22 @@ int main(void)
     CHECK(bs_reader_start(reader) == 0);
     CHECK(bs_reader_take(reader, bytes, &length, 1000) == BIRRIASDR_ERROR_IO);
     bs_reader_destroy(reader);
+    /* The OS's USB transfer memory limit (Linux usbfs_memory_mb) surfaces as
+     * NO_MEM from submission, at startup or on resubmission; it gets its own
+     * error rather than a generic allocation failure. */
+    for (unsigned i = 0; i < 2; ++i) {
+        reset_mock(i ? 8 : 0, i ? 5 : 3);
+        mock.submit_error = LIBUSB_ERROR_NO_MEM;
+        CHECK(bs_reader_create(&dev, 4, &reader) == 0);
+        if (i) {
+            CHECK(bs_reader_start(reader) == 0);
+            CHECK(bs_reader_take(reader, bytes, &length, 1000) == BIRRIASDR_ERROR_USB_MEMORY);
+        } else {
+            CHECK(bs_reader_start(reader) == BIRRIASDR_ERROR_USB_MEMORY);
+        }
+        bs_reader_destroy(reader);
+    }
+    CHECK(strstr(birriasdr_strerror(BIRRIASDR_ERROR_USB_MEMORY), "usbfs_memory_mb"));
     for (unsigned i = 0; i < 2; ++i) {
         reset_mock(1, 0);
         mock.status = i ? LIBUSB_TRANSFER_ERROR : LIBUSB_TRANSFER_NO_DEVICE;

@@ -31,7 +31,11 @@ enum birriasdr_error {
     BIRRIASDR_ERROR_COLD_BOOT = -9,
     BIRRIASDR_ERROR_PROTOCOL = -10,
     BIRRIASDR_ERROR_OVERRUN = -11,
-    BIRRIASDR_ERROR_STATE = -12
+    BIRRIASDR_ERROR_STATE = -12,
+    /** The OS refused memory for queued USB transfers. On Linux this is usually
+     * usbcore's usbfs_memory_mb limit (16 MB by default, shared by all devices):
+     * raise it or request fewer transfers. */
+    BIRRIASDR_ERROR_USB_MEMORY = -13
 };
 
 enum birriasdr_chipset {
@@ -378,7 +382,8 @@ int birriasdr_set_recovery(birriasdr_dev_t *dev, uint32_t max_restarts,
 
 /** Capture an exact finite number of complex samples into I,Q int16_t pairs.
  * count must be a positive multiple of 2048, with room for 2*count int16_t's.
- * count is in output samples, after any host decimation.
+ * count is in output samples, after any host decimation. It queues the same
+ * default number of USB transfers as read_async with transfer_count=0.
  * *n_read is initialized to zero and reports any prefix even on error. Samples
  * are continuous only within one successful call; consecutive calls restart
  * the acquisition program and must not be concatenated as a continuous stream.
@@ -388,8 +393,10 @@ int birriasdr_read_sync(birriasdr_dev_t *dev, int16_t *iq, uint32_t count,
 
 /** Stream until cancel_async, device loss, or an unrecovered hardware/protocol error.
  * Like librtlsdr, this blocks the calling thread while asynchronous USB reads
- * run. transfer_count=0 selects 64 queued transfers, or 256 on macOS.
- * Allowed values are 4..256.
+ * run. transfer_count=0 selects 192 queued transfers of 64 KiB, or 256 on
+ * macOS. Allowed values are 4..256. On Linux, all devices' queued transfers
+ * share usbcore's usbfs_memory_mb limit (16 MB by default, so 256 do not
+ * fit); exceeding it returns BIRRIASDR_ERROR_USB_MEMORY.
  * buffer_samples=0 selects 16384; otherwise use a multiple of 2048, <=262144.
  * A final callback may be shorter. Cancellation drains submitted device
  * packets before returning; callbacks can still arrive after cancellation.

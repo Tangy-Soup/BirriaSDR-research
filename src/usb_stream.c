@@ -53,6 +53,15 @@ static void queue_transfer(struct bs_reader *reader, struct libusb_transfer *tra
     ++reader->count;
 }
 
+/* Submission memory failures come from the OS's limit on queued USB transfer
+ * memory (Linux usbfs_memory_mb), not from our own allocations, which all
+ * happen in bs_reader_create(). Report them separately so callers can say so.
+ */
+static int submit_error(int result)
+{
+    return result == LIBUSB_ERROR_NO_MEM ? BIRRIASDR_ERROR_USB_MEMORY : bs_usb_error(result);
+}
+
 /* Submit only after completed bytes have a stable queue slot. Submission
  * failure leaves ownership with us and is still a real transport error.
  */
@@ -61,7 +70,7 @@ static void submit_slot(struct transfer_slot *slot)
     struct bs_reader *reader = slot->reader;
     int result = libusb_submit_transfer(slot->transfer);
     if (result < 0)
-        reader->error = bs_usb_error(result);
+        reader->error = submit_error(result);
     else {
         slot->pending = true;
         ++reader->inflight;
@@ -224,7 +233,7 @@ int bs_reader_start(struct bs_reader *reader)
         ++reader->inflight;
     }
     if (result < 0)
-        reader->error = bs_usb_error(result);
+        reader->error = submit_error(result);
     if (pthread_create(&reader->thread, NULL, pump_events, reader)) {
         reader->error = BIRRIASDR_ERROR_IO;
         cancel_transfers(reader);
@@ -232,7 +241,7 @@ int bs_reader_start(struct bs_reader *reader)
         return reader->error;
     }
     reader->started = true;
-    return result < 0 ? bs_usb_error(result) : 0;
+    return result < 0 ? submit_error(result) : 0;
 }
 
 /* Copy one completed transfer while holding the queue lock. The consumer gets
