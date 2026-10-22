@@ -216,8 +216,10 @@ int birriasdr_set_center_freq(birriasdr_dev_t *dev, uint64_t frequency_hz);
  */
 uint64_t birriasdr_get_center_freq(const birriasdr_dev_t *dev);
 
-/** Stage complex samples/second, while idle only. MT7921 captures at 40000000.
- * The sampled span is 40 MHz, with a selectable matched nominal 20 or 40 MHz
+/** Stage complex samples/second, while idle only. MT7921 captures at 40000000,
+ * or experimentally at 80000000: a single chain at 320 MB/s over USB with the
+ * BW80 filter profile, which replaces the 20/40 MHz setting at that rate.
+ * At 40 MSps the sampled span is 40 MHz, with a selectable matched nominal 20 or 40 MHz
  * analog/digital filter profile. This is not a calibrated passband or an
  * alias-rejection guarantee. Half the capture rate (20000000 on MT7921) keeps
  * the hardware at its rate and decimates 2:1 on the host with a halfband

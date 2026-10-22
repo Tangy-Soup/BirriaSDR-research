@@ -104,8 +104,8 @@ struct birriasdr_dev {
     struct {
         uint32_t gain_baseline[4];
         bool gain_saved;
-        uint32_t filter_baseline[4];
-        bool filter_saved;
+        uint32_t filter_baseline[8];
+        bool filter_saved, filter_wide;
         bool high_band;
         bool band_valid;
         uint32_t detect_baseline;

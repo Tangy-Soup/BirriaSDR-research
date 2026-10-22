@@ -200,9 +200,12 @@ int main(int argc, char **argv)
      */
     if (!pd_n8 && !explicit_discard)
         discard = 0;
-    /* The settling prefix is time: at 20 MSps it is half as many samples. */
+    /* The settling prefix is time: half as many samples at 20 MSps, twice as
+     * many at the experimental 80 MSps. */
     if (rate == 20000000 && !explicit_discard)
         discard = discard ? 5860 * 2048 : 0;
+    if (rate == 80000000 && !explicit_discard)
+        discard = discard ? 23438 * 2048 : 0;
     /* Both chains interleave two samples per sample time (chain 0 first), so
      * counts are interleaved samples and the default settling prefix doubles.
      */
@@ -213,9 +216,12 @@ int main(int argc, char **argv)
         return 1;
     }
     recorder.skip = discard;
-    if (buffered && (!recorder.limit || recorder.limit + discard > 80000000 ||
+    /* Buffered reads hold up to two seconds at 40 MSps (320 MB), or at 80 MSps. */
+    uint64_t buffer_limit = rate == 80000000 ? 160000000 : 80000000;
+    if (buffered && (!recorder.limit || recorder.limit + discard > buffer_limit ||
                      recorder.limit % 2048 || discard % 2048)) {
-        fprintf(stderr, "Buffered capture requires 2048..80000000 samples, including any discard, in multiples of 2048\n");
+        fprintf(stderr, "Buffered capture requires 2048..%llu samples, including any discard, in multiples of 2048\n",
+                (unsigned long long)buffer_limit);
         return 1;
     }
     result = birriasdr_open(&dev, 0);

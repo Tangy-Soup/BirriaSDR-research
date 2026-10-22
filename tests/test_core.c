@@ -188,7 +188,7 @@ static void test_all_sample_values(void)
 static void test_image(void)
 {
     uint32_t state = 0;
-    CHECK(sizeof(mt7921_image) == 1632);
+    CHECK(sizeof(mt7921_image) == 1664);
     for (size_t i = 0; i < sizeof(mt7921_image); i += 4) {
         uint32_t bits = state & 0x10921111, parity = 0;
         while (bits) { parity ^= bits & 1; bits >>= 1; }
@@ -306,7 +306,18 @@ static void test_api(void)
     CHECK(birriasdr_get_tuning_range(&dev, &minimum, &maximum) == 0);
     CHECK(minimum == UINT64_C(2156000000));
     CHECK(birriasdr_set_sample_rate(&dev, 0) == BIRRIASDR_ERROR_UNSUPPORTED);
+    /* 80 MSps is a native (experimental) rate; nothing above it is invented. */
+    CHECK(birriasdr_set_sample_rate(&dev, 80000000) == 0);
+    CHECK(birriasdr_get_sample_rate(&dev) == 80000000 && dev.rate == 80000000 && dev.decimation == 1);
+    CHECK(birriasdr_set_sample_rate(&dev, 160000000) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_get_sample_rate(&dev) == 80000000);
+    /* The BW80 graft is 2.4 GHz only, whichever of rate and center comes first. */
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(5180000000)) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_set_sample_rate(&dev, 40000000) == 0);
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(5180000000)) == 0);
     CHECK(birriasdr_set_sample_rate(&dev, 80000000) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(2437000000)) == 0);
+    CHECK(birriasdr_set_sample_rate(&dev, 40000000) == 0);
     CHECK(birriasdr_get_sample_rate(&dev) == 40000000);
     CHECK(birriasdr_set_gain_codes(&dev, &gain) == BIRRIASDR_ERROR_STATE);
     CHECK(birriasdr_set_tuner_gain_mode(&dev, 1) == 0);

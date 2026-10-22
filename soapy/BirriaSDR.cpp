@@ -26,6 +26,8 @@ namespace {
 constexpr double SAMPLE_RATE = 40e6;
 /* Library host decimation (birriasdr_set_sample_rate()). */
 constexpr double DECIMATED_RATE = 20e6;
+/* Experimental single-chain rate with the BW80 filter profile. */
+constexpr double WIDE_RATE = 80e6;
 constexpr double FULL_SCALE = 8192.0;
 constexpr size_t DEFAULT_BUFFER_SAMPLES = 65536;
 constexpr size_t DEFAULT_BUFFERS = 64;
@@ -465,17 +467,19 @@ public:
         return getFrequency(direction, channel);
     }
 
-    /* Sample rate: the 40 MSps capture, or 20 MSps after the library's halfband
-     * (flat to +/-8.5 MHz; single chain only).
+    /* Sample rate: the 40 MSps capture, 20 MSps after the library's halfband
+     * (flat to +/-8.5 MHz; single chain only), or the experimental 80 MSps
+     * capture (single chain, BW80 profile, 320 MB/s over USB).
      */
     std::vector<double> listSampleRates(const int, const size_t) const override
     {
-        return {DECIMATED_RATE, SAMPLE_RATE};
+        return {DECIMATED_RATE, SAMPLE_RATE, WIDE_RATE};
     }
 
     SoapySDR::RangeList getSampleRateRange(const int, const size_t) const override
     {
-        return {SoapySDR::Range(DECIMATED_RATE, DECIMATED_RATE), SoapySDR::Range(SAMPLE_RATE, SAMPLE_RATE)};
+        return {SoapySDR::Range(DECIMATED_RATE, DECIMATED_RATE), SoapySDR::Range(SAMPLE_RATE, SAMPLE_RATE),
+                SoapySDR::Range(WIDE_RATE, WIDE_RATE)};
     }
 
     void setSampleRate(const int, const size_t, const double rate) override
@@ -496,6 +500,7 @@ public:
 
     /* Bandwidth: nominal 20 or 40 MHz profiles, rounded to the nearer one.
      * The library accepts them only while idle; during a stream it is staged.
+     * At 80 MSps the BW80 profile is used instead, and getBandwidth says so.
      */
     std::vector<double> listBandwidths(const int, const size_t) const override
     {
@@ -522,6 +527,8 @@ public:
 
     double getBandwidth(const int, const size_t) const override
     {
+        if (getSampleRate(SOAPY_SDR_RX, 0) == WIDE_RATE)
+            return WIDE_RATE;
         return staged_bandwidth_ ? staged_bandwidth_ : (double)birriasdr_get_tuner_bandwidth(dev_);
     }
 

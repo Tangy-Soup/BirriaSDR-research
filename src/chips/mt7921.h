@@ -43,6 +43,16 @@
 #define MT_RF_5G_MIN_HZ UINT64_C(4500000000)
 #define MT_RF_5G_MAX_HZ UINT64_C(6200000000)
 #define MT_RF_FRACTION_BITS 20u
+/* Dense ICAP rates: 0x830ad448[19:18] = 3 or 2. 80 MSps is experimental and
+ * single-chain only; it uses the BW80 filter profile (mt7921_filter.c).
+ */
+#define MT_RATE_40 40000000u
+#define MT_RATE_80 80000000u
+/* Longest producer-poll interval the firmware accepts, in microseconds: 30,000
+ * producer units, 46% of the 65,536-unit ring (750 us at 40 MSps, 375 us at
+ * 80 MSps). Passed in mailbox +96 bits 31:16.
+ */
+#define MT_POLL_GUARD_US(rate) ((uint32_t)(UINT64_C(30000000000) / (rate)))
 
 /* A mathematical frequency plan, not a claim of analog tuning coverage.
  * nominal_hz_num / nominal_hz_den is exact for the assumed 60 MHz reference.

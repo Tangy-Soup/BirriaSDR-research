@@ -56,7 +56,8 @@ SOFTWARE.
  * +72 producer position, +76 ROM power-on result, +80 maximum backlog and
  * +84 maximum poll interval in microseconds. The scratch words at +88/+92
  * hold the preceding poll time and completed source units.
- * The host enables local recovery at +96. The words at +100/+104 hold the
+ * The host enables local recovery with bit 0 of +96 and sets the producer
+ * poll guard in microseconds in its bits 31:16. The words at +100/+104 hold the
  * packet count at the current SRAM epoch and the cumulative gap count.
  * The scratch flag at +108 records whether ICAP is actively producing.
  * A 48-byte event (extended ID 0xf6) precedes each new epoch. It carries the
@@ -75,9 +76,10 @@ SOFTWARE.
     ori \reg, \reg, (\value & 0xfff)
     .endm
     /* Observe the live capture even while USB is stalled. One address unit is
-     * four SRAM bytes, or one complex sample in the fixed 40 MSps format. The
-     * ring contains 65536 units (1.6384 ms). The 750 us poll guard rejects
-     * ambiguous producer movement before a whole ring can pass unnoticed.
+     * four SRAM bytes, or one complex sample in the dense format at either
+     * rate. The ring contains 65536 units: 1.6384 ms at 40 MSps, 0.8192 ms at
+     * 80 MSps. The host's poll guard (750 us at 40 MSps, 375 us at 80 MSps)
+     * rejects ambiguous producer movement before a whole ring can pass unnoticed.
      * Scratch r0/r1/r3, preserve the DMA wait counter (r2) and ring registers. */
     .macro observe_source
     load32 $r0, 0x89020068
@@ -90,7 +92,9 @@ SOFTWARE.
     beqz $r3, 90f
     swi $r1, [$fp + 84]
 90:
-    slti $r3, $r1, 750
+    lwi $r3, [$fp + 96]
+    srli $r3, $r3, 16
+    slt $r3, $r1, $r3
     beqz $r3, timing_fault
     load32 $r0, 0x800210b4
     lwi $r0, [$r0]
@@ -344,6 +348,7 @@ completed:
     slti $r0, $r10, 10
     beqz $r0, terminal
     lwi $r0, [$fp + 96]
+    andi $r0, $r0, 1
     beqz $r0, terminal
     lwi $r0, [$fp + 32]
     bnez $r0, terminal

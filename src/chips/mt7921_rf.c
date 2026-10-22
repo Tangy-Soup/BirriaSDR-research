@@ -293,7 +293,10 @@ static int select_receive_path(birriasdr_dev_t *dev)
 int mt_configure_rf(birriasdr_dev_t *dev)
 {
     uint32_t analog, crystal;
-    if (!mt_frequency_supported(dev->frequency) || dev->rate != 40000000)
+    /* The RF bootstrap is the same at both capture rates: the 60 MHz synth
+     * reference and the 40 MHz crystal do not depend on the ICAP rate field. */
+    if (!mt_frequency_supported(dev->frequency) ||
+        (dev->rate != MT_RATE_40 && dev->rate != MT_RATE_80))
         return BIRRIASDR_ERROR_UNSUPPORTED;
     BS_TRY(mt_rf_read(dev, MT_TOP_PORT, 0x2c, &analog));
     BS_TRY(bs_read32(dev, BS_MMIO, 0x02004600, &crystal));

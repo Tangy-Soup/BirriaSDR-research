@@ -219,12 +219,15 @@ static int initialize_mailbox(birriasdr_dev_t *dev, uint32_t packets)
         if (actual != expected)
             return BIRRIASDR_ERROR_STATE;
     }
-    /* Source recovery is opt-in and never joins gaps in a finite capture. */
+    /* Source recovery is opt-in and never joins gaps in a finite capture.
+     * The same word carries the producer poll guard for the capture rate. */
     uint32_t recover = !packets && dev->recovery_limit && dev->recovery_callback;
+    uint32_t rate = dev->rate == MT_RATE_80 ? MT_RATE_80 : MT_RATE_40;
+    uint32_t word = recover | MT_POLL_GUARD_US(rate) << 16;
     uint32_t actual;
-    BS_TRY(bs_write32(dev, BS_MMIO, MT_MAILBOX + 96, recover));
+    BS_TRY(bs_write32(dev, BS_MMIO, MT_MAILBOX + 96, word));
     BS_TRY(bs_read32(dev, BS_MMIO, MT_MAILBOX + 96, &actual));
-    if (actual != recover)
+    if (actual != word)
         return BIRRIASDR_ERROR_STATE;
     return 0;
 }

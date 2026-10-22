@@ -39,7 +39,7 @@ flowchart LR
 
 The host programs the radio front end and the capture engine directly through
 their registers. The capture engine writes samples into the chip's internal
-memory. A small original device program, only 1,632 bytes and loaded through the
+memory. A small original device program, only 1,664 bytes and loaded through the
 chip's built-in boot ROM, sends that memory to the host over USB. The library
 then checks the stream and hands complex samples to the application.
 
@@ -76,7 +76,7 @@ For more detail, see:
 | Hardware | COMFAST dongle `3574:6211`, or a board with MediaTek's generic ID `0e8d:7961`, with an MT7961 digital die and an MT7972 analog die |
 | Frequency tuning | 2156 to 2610 MHz, or 2190 to 2610 MHz on generic-ID boards, and 4500 to 6200 MHz, including live changes and band switches. Sensitivity is unverified; 5 GHz reception was checked from 5250 to 5815 MHz |
 | Tuning step | Nominally 28.61 Hz, using the full 20-bit fraction. Requests are in whole hertz with no Wi-Fi channel restriction. The physical response to fine steps is still unmeasured |
-| Sample rate | 40 MSps complex capture. 20 MSps output is also available through a 2:1 halfband on the host (`--rate 20000000`), flat to ±8.5 MHz; USB traffic is unchanged. The sample clock and LO share one reference within 0.5 ppm (measured against Wi-Fi beacon timestamps), so 40 MSps is exact up to the crystal's tolerance |
+| Sample rate | 40 MSps complex capture. 20 MSps output is also available through a 2:1 halfband on the host (`--rate 20000000`), flat to ±8.5 MHz; USB traffic is unchanged. Experimental: 80 MSps (`--rate 80000000`), single chain, 320 MB/s over USB, with the BW80 filter profile. On the EDUP board over usbipd it gave flat-to-±30 MHz captures that decode channels 1–11 at once; 1 s finite captures usually succeed, and continuous reads see about one recovered gap per 1–2 s. The sample clock and LO share one reference within 0.5 ppm (measured against Wi-Fi beacon timestamps), so 40 MSps is exact up to the crystal's tolerance |
 | Receive filter profiles | Nominal 20 or 40 MHz, selected while idle. Both keep 40 MSps and the same USB traffic; default is 40 MHz. Opt-in `--channel-filter` captures after the PHY's digital channel filter, which follows the profile: at 20 MHz it lowered the floor 10–15 MHz off centre by about 13 dB. See [channel filter](docs/mt7921.md#channel-filter) |
 | Sampled bandwidth | 40 MHz span with matching nominal 40 MHz analog and digital settings. See [filter characteristics](docs/mt7921.md#filtering) for rolloff and aliasing limits |
 | Sample resolution | Signed 14-bit I and Q, from −8192 to 8191 |
@@ -90,7 +90,7 @@ For more detail, see:
 | Reference clock | On-board 40 MHz crystal |
 | Host interface | Bulk transfers over USB 3.0 at about 161 MB/s |
 | Output format | Interleaved signed 16-bit I and Q (`cs16`). Buffers from the API are native-endian, and recorder files are little-endian |
-| Firmware | Original 1,632-byte RAM program. No vendor firmware and nothing flashed |
+| Firmware | Original 1,664-byte RAM program. No vendor firmware and nothing flashed |
 | Host platforms | Linux, tested on a Raspberry Pi 5, and macOS, tested on an Apple Silicon Mac |
 
 ## Proof of concept
@@ -368,7 +368,7 @@ directory.
 | --- | --- |
 | Channels | RX 0 is chain 0. With chain selection, RX 1 is chain 1, and a stream on channels `{0, 1}` captures both chains, deinterleaved into one buffer per channel. Chain 1 and both chains are research settings, as above |
 | Formats | Native `CS16` with full scale 8192, or `CF32` scaled to ±1 |
-| Sample rate | 40 MSps, or 20 MSps through the library's 2:1 halfband (flat to ±8.5 MHz). 20 MSps is single-chain only |
+| Sample rate | 40 MSps, or 20 MSps through the library's 2:1 halfband (flat to ±8.5 MHz). 20 MSps is single-chain only. Experimental 80 MSps, single chain; `getBandwidth` then reports the 80 MHz profile |
 | Frequency | One `RF` component over the tuning range, retuned live. An out-of-range request is logged and leaves the tuner where it was |
 | Bandwidth | 20 or 40 MHz, rounded to the nearer one. A change during a stream applies at the next stream start |
 | Gain mode | Automatic releases the manual overrides; manual applies the cached codes |

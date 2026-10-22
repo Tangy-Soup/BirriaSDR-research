@@ -20,7 +20,8 @@
  *
  * ICAP control is 0x80021090, its start/end offsets are 0x80021098/0x8002109c,
  * and its producer pointer is 0x800210b4. The 256 KiB ring at byte address
- * 0xe0200000 holds 65,536 complex samples: only 1.6384 ms at 40 MSps. Samples
+ * 0xe0200000 holds 65,536 complex samples: only 1.6384 ms at 40 MSps, and
+ * 0.8192 ms at the experimental 80 MSps (rate field 2, single chain). Samples
  * occupy four bytes each, little-endian Q then I in 16-bit slots with 14 valid
  * bits per component. Four consecutive complex samples fill 16 bytes without
  * inter-sample padding. Address units must not be confused with byte offsets.
@@ -55,12 +56,16 @@
 /* ICAP writes consecutive raw14 Q,I pairs into a 256 KiB circular SRAM.
  * The original MCU program later watches its producer pointer and submits
  * serial DMA descriptors referencing that SRAM directly. This host setup
- * selects receive-only MAC clocks, the chain-0 tap and the dense 40 MSps mode;
- * it leaves capture stopped until bulk-IN requests have been queued.
+ * selects receive-only MAC clocks, the chain-0 tap and the dense 40 MSps mode
+ * (or the experimental 80 MSps rate field); it leaves capture stopped until
+ * bulk-IN requests have been queued.
  */
 int mt_configure_capture(birriasdr_dev_t *dev)
 {
     uint32_t value;
+    /* Two chains at 80 MSps would need 640 MB/s, beyond USB 3 Gen 1. */
+    if (dev->rate == MT_RATE_80 && atomic_load(&dev->receive_chain) == BIRRIASDR_CHAIN_BOTH)
+        return BIRRIASDR_ERROR_UNSUPPORTED;
     BS_TRY(bs_read32(dev, BS_MMIO, MT_MAILBOX + 76, &value));
     if (value)
         return BIRRIASDR_ERROR_STATE;
@@ -79,7 +84,9 @@ int mt_configure_capture(birriasdr_dev_t *dev)
     BS_TRY(bs_write32(dev, BS_MMIO, 0x8002109c, 0xfffc));
     BS_TRY(bs_update32(dev, BS_MMIO, 0x800210b8, 0xf0000, 0x9c000000));
     BS_TRY(bs_update32(dev, BS_MMIO, 0x830ad440, 0xff, 0x80000013));
-    BS_TRY(bs_update32(dev, BS_MMIO, 0x830ad448, 0x0fffffff, 0x008c0400));
+    /* Dense mode, rate field [19:18] (3 = 40 MSps, 2 = 80 MSps), tap 4. */
+    BS_TRY(bs_update32(dev, BS_MMIO, 0x830ad448, 0x0fffffff,
+                       dev->rate == MT_RATE_80 ? 0x00880400 : 0x008c0400));
     BS_TRY(bs_update32(dev, BS_MMIO, 0x88009004, 0, 0x0f000000));
     return bs_write32(dev, BS_MMIO, 0x80021090, 0x4f1);
 }
@@ -119,7 +126,10 @@ static int validate(uint64_t frequency, uint32_t rate, const struct birriasdr_ga
 {
     if (gain->lna > 5 || gain->lpf > 8 || gain->digital > 12)
         return BIRRIASDR_ERROR_INVALID;
-    if (!mt_frequency_supported(frequency) || rate != 40000000)
+    /* The BW80 graft is the 2.4 GHz recipe (0x830a0080 channel field 6), so the
+     * experimental 80 MSps rate is limited to that band. */
+    if (!mt_frequency_supported(frequency) || (rate != MT_RATE_40 && rate != MT_RATE_80) ||
+        (rate == MT_RATE_80 && frequency > MT_RF_MAX_HZ))
         return BIRRIASDR_ERROR_UNSUPPORTED;
     return 0;
 }
