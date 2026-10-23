@@ -63,23 +63,43 @@ struct rf_word { uint32_t address, value; };
  * Wi-Fi ports share triplet +0x10/busy bit 1; TOP uses +0x50/busy bit 5.
  * The MCU must not use this bridge concurrently. Our streaming program leaves
  * it alone after GO; the control mutex serializes all host register procedures.
+ *
+ * Bring-up, reset and recovery use the full handshake. During live control
+ * (control_ready: after GO, under the control mutex) nothing else can use the
+ * bridge, so two of its control transfers are redundant. The busy poll before
+ * an access is skipped when our previous access on that triplet ended with an
+ * idle poll. The command word's upper half comes from the last full handshake
+ * instead of a fresh read; the written word is unchanged. Each USB control
+ * transfer costs a round trip (about 0.4 ms over usbipd), and this removes 84
+ * of the 231 per live retune. Any failure falls back to the full handshake.
  */
 static int rf_transfer(birriasdr_dev_t *dev, unsigned port, uint32_t address,
                        uint32_t *value, bool read)
 {
     const uint32_t base = 0x7c004000;
+    unsigned triplet = port == MT_TOP_PORT;
+    bool live = dev->control_ready;
     uint32_t command, control, busy;
     if ((port != 0 && port != 1 && port != 5) || address > 0xfff || address % 4)
         return BIRRIASDR_ERROR_INVALID;
-    command = base + (port == MT_TOP_PORT ? 0x50 : 0x10);
-    busy = 1u << (port == MT_TOP_PORT ? 5 : 1);
-    BS_TRY(bs_poll32(dev, BS_BRIDGE, base, busy, 0, 100));
-    BS_TRY(bs_read32(dev, BS_BRIDGE, command, &control));
-    control = (control & 0xffff0000u) | port << 13 | address | (read ? 0x1000 : 0);
+    command = base + (triplet ? 0x50 : 0x10);
+    busy = 1u << (triplet ? 5 : 1);
+    if (!live || !dev->mt7921.rf_idle[triplet])
+        BS_TRY(bs_poll32(dev, BS_BRIDGE, base, busy, 0, 100));
+    dev->mt7921.rf_idle[triplet] = false;
+    if (!live || !dev->mt7921.rf_command_known[triplet]) {
+        BS_TRY(bs_read32(dev, BS_BRIDGE, command, &control));
+        dev->mt7921.rf_command_high[triplet] = control & 0xffff0000u;
+        dev->mt7921.rf_command_known[triplet] = true;
+    }
+    control = dev->mt7921.rf_command_high[triplet] | port << 13 | address | (read ? 0x1000 : 0);
     BS_TRY(bs_write32(dev, BS_BRIDGE, command, control));
     BS_TRY(bs_write32(dev, BS_BRIDGE, command + 4, read ? 0 : *value));
     BS_TRY(bs_poll32(dev, BS_BRIDGE, base, busy, 0, 100));
-    return read ? bs_read32(dev, BS_BRIDGE, command + 8, value) : 0;
+    if (read)
+        BS_TRY(bs_read32(dev, BS_BRIDGE, command + 8, value));
+    dev->mt7921.rf_idle[triplet] = true;
+    return 0;
 }
 
 /* Read one analog register; TOP and Wi-Fi banks are explicitly distinguished. */

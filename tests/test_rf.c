@@ -15,6 +15,8 @@ struct model {
     bool stuck_standby;
     uint32_t fail_address;
     bool fail_after_write;
+    /* Bridge traffic: busy polls, command-word reads, launched SPI accesses. */
+    unsigned polls, command_reads, accesses;
 };
 
 /* A sparse map models register readbacks, not the production implementation. */
@@ -45,6 +47,8 @@ static int read32(void *context, enum bs_space space, uint32_t address, uint32_t
     struct model *model = context;
     if (space == BS_BRIDGE) {
         uint32_t command = model->command[address >= 0x7c004050];
+        model->polls += address == 0x7c004000;
+        model->command_reads += address == 0x7c004010 || address == 0x7c004050;
         *value = address == 0x7c004000 ? 0 :
             address == 0x7c004018 || address == 0x7c004058 ?
             get(model, 16 + ((command >> 13) & 7), command & 0xfff) : command;
@@ -70,6 +74,7 @@ static int write32(void *context, enum bs_space space, uint32_t address, uint32_
             return 0;
         }
         command = model->command[index];
+        ++model->accesses;
         if (command & 0x1000)
             return 0;
         target = 16 + ((command >> 13) & 7);
@@ -421,6 +426,60 @@ static void test_fine_tuning(void)
     CHECK(pthread_mutex_destroy(&dev.control_mutex) == 0);
 }
 
+/* Live control (control_ready) skips the busy poll before an access and the
+ * command-word read, and nothing else: the RF writes, their order and the
+ * command words are identical to the full handshake, the upper half of the
+ * command word survives, and any failure restores the full handshake.
+ */
+static void test_live_handshake(void)
+{
+    struct model model;
+    birriasdr_dev_t dev;
+    struct word full[256];
+    size_t before, count;
+    unsigned accesses;
+    initialize(&model, &dev);
+    model.command[0] = 0xabcd0000;
+    CHECK(mt_configure_rf(&dev) == 0);
+    /* Bring-up: two polls and one command read per access. */
+    CHECK(model.accesses && model.polls == 2 * model.accesses);
+    CHECK(model.command_reads == model.accesses);
+    before = model.written;
+    model.polls = model.command_reads = model.accesses = 0;
+    CHECK(mt_change_frequency(&dev, UINT64_C(2412000000)) == 0);
+    CHECK(model.polls == 2 * model.accesses && model.command_reads == model.accesses);
+    count = model.written - before;
+    CHECK(count <= 256);
+    memcpy(full, &model.writes[before], count * sizeof(*full));
+    CHECK(mt_change_frequency(&dev, UINT64_C(2437000000)) == 0);
+    /* The same retune, live: only the post-access polls remain. */
+    dev.control_ready = true;
+    before = model.written;
+    model.polls = model.command_reads = model.accesses = 0;
+    CHECK(mt_change_frequency(&dev, UINT64_C(2412000000)) == 0);
+    accesses = model.accesses;
+    CHECK(accesses == 42 && model.polls == accesses && model.command_reads == 0);
+    CHECK(model.written - before == count);
+    CHECK(!memcmp(full, &model.writes[before], count * sizeof(*full)));
+    CHECK((model.command[0] & 0xffff0000u) == 0xabcd0000);
+    /* A failed live access: the next access polls first again. A failed live
+     * retune still rolls back (covered above) and leaves the bridge idle. */
+    model.fail_address = 0xce0;
+    CHECK(mt_rf_write(&dev, MT_SYNTH_PORT, 0xce0, 0) == BIRRIASDR_ERROR_IO);
+    CHECK(!dev.mt7921.rf_idle[0]);
+    model.polls = model.accesses = 0;
+    uint32_t value;
+    CHECK(mt_rf_read(&dev, MT_SYNTH_PORT, 0xca8, &value) == 0);
+    CHECK(model.accesses == 1 && model.polls == 2 && dev.mt7921.rf_idle[0]);
+    CHECK(mt_rf_read(&dev, MT_SYNTH_PORT, 0xca8, &value) == 0);
+    CHECK(model.accesses == 2 && model.polls == 3);
+    /* Leaving live control restores the full handshake. */
+    dev.control_ready = false;
+    model.polls = model.command_reads = model.accesses = 0;
+    CHECK(mt_rf_read(&dev, MT_SYNTH_PORT, 0xca8, &value) == 0);
+    CHECK(model.polls == 2 && model.command_reads == 1);
+}
+
 /* Entire RF regression suite is read/write-model based and never opens USB. */
 int main(int argc, char **argv)
 {
@@ -433,5 +492,6 @@ int main(int argc, char **argv)
     test_fine_tuning();
     test_band_switch();
     test_band_switch_failures();
+    test_live_handshake();
     return 0;
 }

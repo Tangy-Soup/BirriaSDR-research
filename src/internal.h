@@ -112,6 +112,12 @@ struct birriasdr_dev {
         bool detect_saved;
         uint32_t chain_baseline[3], chain_mask[3];
         bool chain_saved;
+        /* RF SPI bridge, per triplet (0 = Wi-Fi ports, 1 = TOP): our last
+         * access ended with an idle busy poll, and the command word's upper
+         * half from the last full handshake. Used only for live control.
+         */
+        bool rf_idle[2], rf_command_known[2];
+        uint32_t rf_command_high[2];
     } mt7921;
     struct birriasdr_stream_stats stats;
 };

@@ -253,10 +253,11 @@ sample index counted from the start of the stream. While capture runs, another
 thread can change the center frequency and raw gain, read them back, or call
 `cancel_async`. When the device reports `BIRRIASDR_CAP_LIVE_TUNING` and
 `BIRRIASDR_CAP_LIVE_GAIN`, those changes take effect without restarting capture.
-On the tested Raspberry Pi, a retune takes about 87 ms and disturbs the signal
-phase. Samples already queued may still come from the old center after the call
-returns, and the library cannot report the exact sample where the change
-happened. All other settings can only change while the device is idle. See the
+A retune disturbs the signal phase. It took about 87 ms on the tested
+Raspberry Pi, and about 54 ms over usbipd on Windows after the live RF-bridge
+handshake was shortened (147 USB control transfers instead of 231). Samples
+already queued may still come from the old center after the call returns, and
+the library cannot report the exact sample where the change happened. All other settings can only change while the device is idle. See the
 [tuning details](docs/mt7921.md#changing-frequency-during-capture) and
 [gain details](docs/mt7921.md#changing-gain-during-capture). Callbacks must
 return quickly. If the device or host queue overflows, the library reports an
