@@ -398,6 +398,15 @@ GNU Radio 3.10's own Soapy block applies `write_setting` normally, but its
 Python `read_setting` always returns the declared default without asking the
 device.
 
+At 80 MSps, GNU Radio's default buffers between blocks are too small. A
+gr-osmosdr source then delivers only 69–73 MS/s, and the module reports
+buffers "dropped because the application fell behind". Giving the source a
+larger output buffer fixes it: `src.set_min_output_buffer(1 << 20)` sustained
+the full rate with no drops (`osmosdr_test.py --min-buffer 1048576`). GNU
+Radio's own `soapy.source` kept up with default buffers. gqrx builds its own
+flowgraph on gr-osmosdr, so expect drops there at 80 MSps; 40 MSps is the
+practical gqrx rate.
+
 Setters such as frequency, gain, bandwidth, antenna and sample rate log errors
 through the SoapySDR logger instead of throwing, because some applications,
 SDR++ among them, call them without catching exceptions. Opening the device and
