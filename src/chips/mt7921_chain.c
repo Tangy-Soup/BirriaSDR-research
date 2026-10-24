@@ -37,9 +37,10 @@
  * not filter samples, so applications must remove DC (a ~1.6 ms block mean
  * sufficed); with it removed, both slots decoded alike at channel 6.
  *
- * WF1's gain is not under the manual-gain overrides (those target chain 0) and
- * steps by ~6 dB within a capture, as AGC would. Evidence and limits are in
- * docs/mt7921.md and captures/research_20261019_tenth_round in the workspace.
+ * Manual gain forces every streamed chain (mt7921_gain.c). Released, WF1 holds
+ * a fixed analog 5/7 plus digital gain. The both-chain taps precede the digital
+ * gain stage. Evidence and limits are in docs/mt7921.md and, in the workspace,
+ * captures/research_20261019_tenth_round and research_20261023_gain_db.
  *
  * The optional channel filter (birriasdr_set_channel_filter()) moves a
  * single-chain capture from stage 1 to stage 3 of the same tap map: tap 12 for

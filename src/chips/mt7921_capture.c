@@ -124,7 +124,7 @@ int mt_status(birriasdr_dev_t *dev, uint32_t words[16])
  */
 static int validate(uint64_t frequency, uint32_t rate, const struct birriasdr_gain *gain)
 {
-    if (gain->lna > 5 || gain->lpf > 8 || gain->digital > 12)
+    if (gain->lna > MT_GAIN_LNA_MAX || gain->lpf > MT_GAIN_LPF_MAX || gain->digital > MT_GAIN_DIGITAL_MAX)
         return BIRRIASDR_ERROR_INVALID;
     /* The BW80 graft is the 2.4 GHz recipe (0x830a0080 channel field 6), so the
      * experimental 80 MSps rate is limited to that band. */
@@ -151,9 +151,9 @@ static const struct bs_band bands[] = {
 const struct bs_backend bs_mt7921_backend = {
     .chipset = BIRRIASDR_CHIP_MT7921,
     .name = "MT7961/MT7972",
-    .capabilities = BIRRIASDR_CAP_RX | BIRRIASDR_CAP_RAW_GAIN | BIRRIASDR_CAP_LIVE_GAIN |
-                    BIRRIASDR_CAP_TUNING | BIRRIASDR_CAP_LIVE_TUNING | BIRRIASDR_CAP_FILTER |
-                    BIRRIASDR_CAP_PD_SUPPRESS | BIRRIASDR_CAP_CHAIN_SELECT |
+    .capabilities = BIRRIASDR_CAP_RX | BIRRIASDR_CAP_RAW_GAIN | BIRRIASDR_CAP_GAIN_DB |
+                    BIRRIASDR_CAP_LIVE_GAIN | BIRRIASDR_CAP_TUNING | BIRRIASDR_CAP_LIVE_TUNING |
+                    BIRRIASDR_CAP_FILTER | BIRRIASDR_CAP_PD_SUPPRESS | BIRRIASDR_CAP_CHAIN_SELECT |
                     BIRRIASDR_CAP_CHANNEL_FILTER,
     .default_frequency = MT_RF_ANCHOR_HZ,
     .min_frequency = MT_RF_MIN_HZ, .max_frequency = MT_RF_5G_MAX_HZ,
@@ -164,5 +164,6 @@ const struct bs_backend bs_mt7921_backend = {
     .identify = identify,
     .prepare = mt_prepare, .start = mt_start, .stop = mt_stop,
     .status = mt_status, .reset = mt_reset, .change_gain = mt_change_gain,
-    .change_frequency = mt_change_frequency
+    .change_frequency = mt_change_frequency,
+    .gain_steps = mt_gain_steps, .gain_tenths_db = mt_gain_tenths_db
 };

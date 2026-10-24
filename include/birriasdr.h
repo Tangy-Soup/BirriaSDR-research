@@ -81,7 +81,7 @@ struct birriasdr_device_info {
 
 /** Raw hardware indices, deliberately distinct from calibrated gain in dB. */
 struct birriasdr_gain {
-    uint8_t lna;       /**< MT7972 range 0..5; 5 GHz needs 4..5 for full sensitivity. */
+    uint8_t lna;       /**< MT7972 range 0..5 (6 and 7 measured the same as 5); 5 GHz needs 4..5. */
     uint8_t lpf;       /**< Filter-stage gain 0..8; does not select bandwidth. */
     uint8_t digital;   /**< Digital gain code 0..12. */
 };
@@ -124,8 +124,8 @@ struct birriasdr_stream_stats {
  * is no averaging, decimation, left shifting, or floating-point conversion.
  * Run callbacks promptly: a stalled consumer can overrun the device's SRAM.
  * The center-frequency setter/getter, tuning-range getter, raw-gain mode/code
- * setters, gain-code getter and cancel_async may be called from the callback;
- * other operations must wait until the read returns.
+ * setters, gain-code getter, dB gain setter/getters and cancel_async may be
+ * called from the callback; other operations must wait until the read returns.
  * Prefer a control thread for updates so callbacks keep draining data.
  */
 typedef void (*birriasdr_read_async_cb_t)(const int16_t *iq, uint32_t count,
@@ -257,6 +257,7 @@ int birriasdr_set_tuner_gain_mode(birriasdr_dev_t *dev, int manual);
 /** Set manual LNA/LPF/digital indices. Requires manual mode. The same idle/live
  * semantics as set_tuner_gain_mode apply. The backend preserves unrelated fields,
  * verifies readbacks and restores the preceding settings if an update fails.
+ * Manual mode forces every streamed receive chain to the same codes.
  */
 int birriasdr_set_gain_codes(birriasdr_dev_t *dev, const struct birriasdr_gain *gain);
 
@@ -266,13 +267,29 @@ int birriasdr_set_gain_codes(birriasdr_dev_t *dev, const struct birriasdr_gain *
 int birriasdr_get_gain_codes(birriasdr_dev_t *dev, struct birriasdr_gain *gain,
                             int *manual);
 
-/** Reserved: calibrated tuner gain in tenths of a dB. UNSUPPORTED until the
- * measured stage-gain mapping is known; raw indices must not be labeled dB.
+/** Set manual gain in tenths of a dB with CAP_GAIN_DB. Picks the entry of
+ * get_tuner_gains nearest the request (the lower one on a tie) and commits its
+ * raw codes exactly like set_gain_codes: manual mode is required (STATE
+ * otherwise), and the same idle/live semantics apply.
+ * The scale is relative, in dB above the lowest code, not an absolute RF gain.
+ * The MT7921 table was measured at 2437 MHz and 40 MSps, per receive chain;
+ * other frequencies and 80 MSps use the same values unmeasured.
  */
 int birriasdr_set_tuner_gain(birriasdr_dev_t *dev, int tenths_db);
 
-/** Reserved: enumerate calibrated gains. UNSUPPORTED; does not fill gains. */
+/** Enumerate the overall-gain steps for the staged receive chain, ascending,
+ * in tenths of a dB. Fills at most `capacity` entries and returns the total
+ * count; pass gains=NULL and capacity=0 to query it. UNSUPPORTED without
+ * CAP_GAIN_DB. The table changes with set_receive_chain. Safe during a read.
+ */
 int birriasdr_get_tuner_gains(birriasdr_dev_t *dev, int *gains, size_t capacity);
+
+/** Convert the committed raw codes to tenths of a dB on the same relative
+ * scale, for the staged receive chain. In released mode the codes are staged,
+ * not applied, so the value is what manual mode would give. No register access;
+ * UNSUPPORTED without CAP_GAIN_DB.
+ */
+int birriasdr_get_tuner_gain(birriasdr_dev_t *dev, int *tenths_db);
 
 /** Reserved: global AGC enable/freeze. UNSUPPORTED because only individual
  * force fields are established; use tuner_gain_mode for those overrides.
@@ -426,8 +443,8 @@ int birriasdr_get_stream_stats(birriasdr_dev_t *dev,
 
 /* All functions return 0 on success unless their comments say otherwise.
  * The center-frequency setter/getter, tuning-range getter, raw-gain mode/code
- * setters, gain-code getter and cancel_async may run concurrently with a read
- * and with each other. Callers must serialize all other operations on a handle,
+ * setters, gain-code getter, dB gain setter/getters and cancel_async may run
+ * concurrently with a read and with each other. Callers must serialize all other operations on a handle,
  * including close after joining BOTH the reader and any control threads.
  * Different handles may be used independently from different threads.
  */

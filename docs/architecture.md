@@ -14,7 +14,7 @@ and the [MT7921 device reference](mt7921.md).
 | `src/chips/mt7921_boot.c` | Original firmware download, ROM command framing and WFSYS reset |
 | `src/chips/mt7921_rf.c` | Analog register access, clocks, bias and receive routing |
 | `src/chips/mt7921_tune.c` | Frequency encoding, oscillator calibration, live retuning and rollback, and wider research sweeps |
-| `src/chips/mt7921_gain.c` | Manual gain, field masks, readbacks and baseline restoration |
+| `src/chips/mt7921_gain.c` | Manual gain on each streamed chain, field masks, readbacks, baseline restoration and the measured dB table |
 | `src/chips/mt7921_filter.c` | Matched analog and digital receive bandwidth, verified application and baseline restoration |
 | `src/chips/mt7921_capture.c` | Capture engine (ICAP) configuration, mailbox controls and backend registration |
 | `src/chips/mt7921_frame.c` | Parsing of original firmware events and conversion from raw14 to I/Q |
@@ -48,9 +48,11 @@ chipset's native descriptors into the MT7921 parser.
    backed by evidence. Until then, return `BIRRIASDR_ERROR_UNSUPPORTED` and
    leave the capability unset. A qualified live gain backend supplies
    `change_gain` and sets `BIRRIASDR_CAP_LIVE_GAIN`, and the common layer
-   serializes those calls. A tuning backend advertises `BIRRIASDR_CAP_TUNING`
-   and provides its command bounds. If it also supports live changes, it
-   supplies `change_frequency` and sets `BIRRIASDR_CAP_LIVE_TUNING`. Document
+   serializes those calls. A backend with a measured gain table supplies
+   `gain_steps` and `gain_tenths_db` and sets `BIRRIASDR_CAP_GAIN_DB`. A
+   tuning backend advertises `BIRRIASDR_CAP_TUNING` and provides its command
+   bounds. If it also supports live changes, it supplies `change_frequency`
+   and sets `BIRRIASDR_CAP_LIVE_TUNING`. Document
    measured coverage separately from the command bounds, because a capability
    bit does not establish sensitivity.
 
@@ -156,7 +158,9 @@ a wrong die, gain rollback and repeated gain restoration. The live-control tests
 exercise concurrent setters, coherent settings readback, startup gates and
 failure-triggered cancellation. The gain register model also checks
 manual-to-manual rollback and repeated release and force cycles against the
-original unforced baseline.
+original unforced baseline. It also checks that chain 1 and both-chain
+capture force exactly the streamed chains, with chain 1's words and SPI port,
+and that the dB steps ascend and map requests to the nearest step.
 
 The tuning tests check exact divider words, fractional carry, arithmetic bounds
 and quantization error. By default, tuning uses all 20 fractional bits. The

@@ -82,7 +82,7 @@ For more detail, see:
 | Sample resolution | Signed 14-bit I and Q, from −8192 to 8191 |
 | Receive channels | Chain 0 by default. Opt-in research setting (`--chain 1` or `--chain both`) for the second receiver alone or both chains interleaved. See [receive-chain selection](docs/mt7921.md#receive-chain-selection) |
 | Transmit | None, receive only |
-| Gain | Raw codes for LNA 0 to 5, filter stage 0 to 8 and digital 0 to 12. 5 GHz needs LNA 4 or 5. Not calibrated in dB |
+| Gain | Raw codes for LNA 0 to 5, filter stage 0 to 8 and digital 0 to 12 on each streamed chain, or an overall gain from a measured table of relative dB (0 to 59.4 dB on chain 0). The table was measured at 2437 MHz on the EDUP board and has no absolute dBm reference; 5 GHz needs LNA 4 or 5 and is not covered by it. See [gain in dB](docs/mt7921.md#gain-in-db) |
 | Live gain changes | Supported without restarting capture, with a brief settling transient |
 | Automatic gain | Manual overrides can be released. Full AGC control is not implemented |
 | Capture blanking | The PHY packet detector blanks short zero runs into the capture. Opt-in packet-detect suppression (`--pd-n8`) removes them after about 250 ms of settling. Research setting, see [packet-detect suppression](docs/mt7921.md#packet-detect-suppression) |
@@ -148,7 +148,7 @@ For Wi-Fi discovery, a narrower profile can reduce neighboring-channel energy:
 ```
 
 `--gain LNA FILTER DIGITAL` selects manual raw codes, including zero, with ranges
-0–3, 0–8 and 0–12. These are not calibrated dB values. The narrower filter helped
+0 to 5, 0 to 8 and 0 to 12. These are raw indices, not dB values. The narrower filter helped
 decode additional AP beacons on the local EDUP MT7921AU board; this does not
 qualify every supported board or guarantee a particular rejection response.
 
@@ -235,7 +235,7 @@ birriasdr_set_sample_rate(dev, 40000000);
 birriasdr_set_tuner_bandwidth(dev, 20000000); /* Optional nominal profile; idle only. */
 birriasdr_set_packet_detect_suppression(dev, 1); /* Optional; discard ~600 ms. */
 birriasdr_set_tuner_gain_mode(dev, 1);
-birriasdr_set_gain_codes(dev, &gain);
+birriasdr_set_gain_codes(dev, &gain);   /* Or birriasdr_set_tuner_gain(dev, 320) for 32.0 dB. */
 birriasdr_read_async(dev, callback, context, 0, 0);
 birriasdr_cancel_async(dev); /* From callback or another normal thread. */
 birriasdr_close(dev);
@@ -243,8 +243,10 @@ birriasdr_close(dev);
 
 This outline skips error handling, so check every return value as the example
 does. Frequencies are 64-bit values. The 2.4 and 5 GHz bands are separate, so
-`birriasdr_get_tuning_band` lists each contiguous band. The raw gain codes are
-separate from the calibrated dB gain API, which is reserved for later.
+`birriasdr_get_tuning_band` lists each contiguous band. The overall gain in
+tenths of a dB picks the nearest step of `birriasdr_get_tuner_gains()`, and like
+the raw codes it needs manual mode. Its scale is relative to the lowest code,
+not an absolute RF gain.
 
 The `read_async` function blocks the calling thread while a dedicated
 background thread keeps USB transfers queued. Callbacks receive borrowed buffers
@@ -373,7 +375,8 @@ directory.
 | Frequency | One `RF` component over the tuning range, retuned live. An out-of-range request is logged and leaves the tuner where it was |
 | Bandwidth | 20 or 40 MHz, rounded to the nearer one. A change during a stream applies at the next stream start |
 | Gain mode | Automatic releases the manual overrides; manual applies the cached codes |
-| Gain elements | `LNA` 0–3, `LPF` 0–8 and `DIG` 0–12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode |
+| Gain elements | `LNA` 0 to 5, `LPF` 0 to 8 and `DIG` 0 to 12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode |
+| Overall gain | The library's measured relative dB table, from 0 to 59.4 dB on chain 0. A value picks the nearest step's codes, and a value set in automatic mode applies at the next manual mode |
 | Antenna | `RX` only |
 | Settings | `packet_detect_suppression` (applies at the next stream start; discard about the first 250 ms), `channel_filter` (capture after the digital channel filter; applies at the next stream start) and `max_restarts` (recovery budget, default 16) |
 | Timestamps | `readStream` sets `SOAPY_SDR_HAS_TIME`. `timeNs` counts samples since activation at the nominal rate; across a gap it adds the lost interval measured on the host clock (about 1 ms uncertainty). It labels samples; it is not a hardware clock |

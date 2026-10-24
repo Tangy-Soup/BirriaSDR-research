@@ -197,6 +197,71 @@ static void test_image(void)
     CHECK(state == 0);
 }
 
+/* The overall-gain table is the measured one, ascending, per receive chain; a
+ * request commits the nearest step's codes (the lower step on a tie) and only
+ * in manual mode, like set_gain_codes.
+ */
+static void test_gain_db(void)
+{
+    birriasdr_dev_t dev = {0};
+    struct birriasdr_gain gain;
+    int gains[32], manual, tenths;
+    atomic_init(&dev.run_state, BS_IDLE);
+    CHECK(pthread_mutex_init(&dev.control_mutex, NULL) == 0);
+    dev.backend = &bs_mt7921_backend;
+    dev.frequency = dev.backend->default_frequency;
+    dev.rate = dev.backend->default_rate;
+    atomic_init(&dev.receive_chain, BIRRIASDR_CHAIN_0);
+    CHECK(birriasdr_get_capabilities(&dev) & BIRRIASDR_CAP_GAIN_DB);
+    CHECK(birriasdr_get_tuner_gains(NULL, NULL, 0) == BIRRIASDR_ERROR_INVALID);
+    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 4) == BIRRIASDR_ERROR_INVALID);
+    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 0) == 26);
+    CHECK(birriasdr_get_tuner_gains(&dev, gains, 3) == 26 && gains[0] == 0 && gains[2] == 138);
+    for (int chain = BIRRIASDR_CHAIN_0; chain <= BIRRIASDR_CHAIN_BOTH; ++chain) {
+        int count;
+        atomic_store(&dev.receive_chain, (unsigned)chain);
+        count = birriasdr_get_tuner_gains(&dev, gains, 32);
+        CHECK(count == (chain == BIRRIASDR_CHAIN_BOTH ? 14 : 26) && gains[0] == 0);
+        for (int i = 1; i < count; ++i)
+            CHECK(gains[i] > gains[i - 1]);
+        CHECK(gains[count - 1] == (chain == BIRRIASDR_CHAIN_0 ? 594 : chain == BIRRIASDR_CHAIN_1 ? 560 : 474));
+    }
+    atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_0);
+    CHECK(birriasdr_set_tuner_gain(NULL, 0) == BIRRIASDR_ERROR_INVALID);
+    CHECK(birriasdr_set_tuner_gain(&dev, 200) == BIRRIASDR_ERROR_STATE);
+    CHECK(birriasdr_set_tuner_gain_mode(&dev, 1) == 0);
+    CHECK(birriasdr_set_tuner_gain(&dev, 200) == 0);
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && manual);
+    CHECK(gain.lna == 3 && gain.lpf == 0 && gain.digital == 0);
+    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 197);
+    CHECK(birriasdr_set_tuner_gain(&dev, 288) == 0);   /* tie between 258 and 318 */
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lna == 4);
+    CHECK(birriasdr_set_tuner_gain(&dev, -1000) == 0);
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && !gain.lna && !gain.lpf && !gain.digital);
+    CHECK(birriasdr_set_tuner_gain(&dev, 10000) == 0);
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0);
+    CHECK(gain.lna == 5 && gain.lpf == 8 && gain.digital == 12);
+    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 594);
+    /* Arbitrary codes use the separable stage table; both-chain skips digital. */
+    gain = (struct birriasdr_gain){2, 8, 6};
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
+    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 138 + 156 + 60);
+    atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_1);
+    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 144 + 110 + 60);
+    atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_BOTH);
+    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 138 + 156);
+    CHECK(birriasdr_set_tuner_gain(&dev, 10000) == 0);
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lna == 5 && gain.lpf == 8 && !gain.digital);
+    CHECK(birriasdr_get_tuner_gain(NULL, &tenths) == BIRRIASDR_ERROR_INVALID);
+    CHECK(birriasdr_get_tuner_gain(&dev, NULL) == BIRRIASDR_ERROR_INVALID);
+    gain = (struct birriasdr_gain){6, 0, 0};
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == BIRRIASDR_ERROR_INVALID);
+    atomic_store(&dev.run_state, BS_RUNNING);
+    CHECK(birriasdr_set_tuner_gain(&dev, 0) == BIRRIASDR_ERROR_BUSY);   /* no control window */
+    atomic_store(&dev.run_state, BS_IDLE);
+    pthread_mutex_destroy(&dev.control_mutex);
+}
+
 /* Unsupported chip/control paths must fail without USB access or pretend values. */
 static void test_api(void)
 {
@@ -223,7 +288,10 @@ static void test_api(void)
     CHECK(birriasdr_get_channel_filter(&dev) == 0);
     dev.backend = &bs_mt7921_backend;
     CHECK(id->backend->prepare(&dev, 0) == BIRRIASDR_ERROR_UNSUPPORTED);
+    dev.backend = id->backend;
     CHECK(birriasdr_set_tuner_gain(&dev, 100) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 0) == BIRRIASDR_ERROR_UNSUPPORTED);
+    dev.backend = &bs_mt7921_backend;
     CHECK(birriasdr_set_agc_mode(&dev, 1) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_get_tuner_bandwidth(NULL) == 0);
     CHECK(birriasdr_set_tuner_bandwidth(NULL, 20000000) == BIRRIASDR_ERROR_INVALID);
@@ -358,6 +426,7 @@ int main(void)
     test_all_sample_values();
     test_image();
     test_api();
+    test_gain_db();
     puts("core tests passed");
     return 0;
 }

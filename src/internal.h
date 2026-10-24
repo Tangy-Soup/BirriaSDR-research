@@ -33,6 +33,12 @@ struct bs_band {
     uint64_t min_frequency, max_frequency;
 };
 
+/* One overall-gain step: relative gain in tenths of a dB and its raw codes. */
+struct bs_gain_step {
+    int tenths_db;
+    struct birriasdr_gain gain;
+};
+
 struct bs_backend {
     enum birriasdr_chipset chipset;
     const char *name;
@@ -53,6 +59,9 @@ struct bs_backend {
     int (*reset)(birriasdr_dev_t *);
     int (*change_gain)(birriasdr_dev_t *, bool manual, const struct birriasdr_gain *);
     int (*change_frequency)(birriasdr_dev_t *, uint64_t frequency);
+    /* Measured relative gain per receive chain; required with CAP_GAIN_DB. */
+    int (*gain_steps)(unsigned chain, struct bs_gain_step *steps, size_t capacity);
+    int (*gain_tenths_db)(unsigned chain, const struct birriasdr_gain *gain, int *tenths_db);
 };
 
 struct bs_usb_id {
@@ -102,8 +111,9 @@ struct birriasdr_dev {
     bool needs_usb_reset;
     bool usb_lost;
     struct {
-        uint32_t gain_baseline[4];
+        uint32_t gain_baseline[2][4];   /* per receive chain */
         bool gain_saved;
+        uint8_t gain_chains;            /* bit c: chain c's baseline is saved */
         uint32_t filter_baseline[8];
         bool filter_saved, filter_wide;
         bool high_band;

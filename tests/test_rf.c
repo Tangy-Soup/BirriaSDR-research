@@ -233,6 +233,84 @@ static void test_gain_updates(void)
     CHECK(mt_change_gain(&dev, true, &gain) == BIRRIASDR_ERROR_INVALID);
 }
 
+/* Manual gain forces exactly the streamed chains: chain 1's PHY words sit
+ * 0x10000 above chain 0's and its analog word is RF 0x768 on SPI 0. Release and
+ * restore return every saved chain, and a forced chain-1 baseline is rejected.
+ */
+static void test_chain_gain(void)
+{
+    struct model model;
+    birriasdr_dev_t dev;
+    struct birriasdr_gain gain = {5, 7, 0};
+    initialize(&model, &dev);
+    atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_1);
+    put(&model, 0, 0x830000c4, 0x08080808);
+    put(&model, 0, 0x830100c4, 0x08080808);
+    put(&model, 16, 0x768, 0x00551234);
+    put(&model, 17, 0x768, 0x00661234);
+    CHECK(mt_apply_gain(&dev) == 0 && dev.mt7921.gain_chains == 2);
+    CHECK(get(&model, 0, 0x830100c4) == 0x8a8a8a0f);   /* LNA 2, LPF 8, forces A/B/C */
+    CHECK(get(&model, 0, 0x83010150) == 0x80200000);
+    CHECK(get(&model, 16, 0x768) == 0x94551234);
+    CHECK(get(&model, 0, 0x830000c4) == 0x08080808);   /* chain 0 untouched */
+    CHECK(get(&model, 17, 0x768) == 0x00661234);
+    CHECK(get(&model, 0, 0x83000150) == 0);
+    CHECK(mt_change_gain(&dev, true, &gain) == 0);
+    CHECK(get(&model, 0, 0x830100c4) == 0x7d7d7d0f && get(&model, 16, 0x768) == 0xabd51234);
+    CHECK(mt_change_gain(&dev, false, &gain) == 0);
+    CHECK(get(&model, 0, 0x830100c4) == 0x08080808 && get(&model, 16, 0x768) == 0x00551234);
+    CHECK(mt_restore_gain(&dev) == 0 && !dev.mt7921.gain_saved && !dev.mt7921.gain_chains);
+
+    initialize(&model, &dev);
+    atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_BOTH);
+    put(&model, 16, 0x768, 0x00551234);
+    put(&model, 17, 0x768, 0x00661234);
+    CHECK(mt_apply_gain(&dev) == 0 && dev.mt7921.gain_chains == 3);
+    CHECK(get(&model, 0, 0x830000c4) == 0x82828207 && get(&model, 0, 0x830100c4) == 0x82828207);
+    CHECK(get(&model, 16, 0x768) == 0x94551234 && get(&model, 17, 0x768) == 0x94661234);
+    CHECK(mt_change_gain(&dev, true, &gain) == 0);
+    CHECK(get(&model, 0, 0x830000c4) == 0x75757507 && get(&model, 0, 0x830100c4) == 0x75757507);
+    model.fail_address = 0x83010108;   /* chain 1's restore fails after chain 0's */
+    CHECK(mt_restore_gain(&dev) == BIRRIASDR_ERROR_IO && dev.mt7921.gain_saved);
+    CHECK(get(&model, 0, 0x830000c4) == 0 && get(&model, 17, 0x768) == 0x00661234);
+    model.fail_address = 0;
+    CHECK(mt_restore_gain(&dev) == 0 && !dev.mt7921.gain_saved);
+    CHECK(get(&model, 0, 0x830100c4) == 0 && get(&model, 16, 0x768) == 0x00551234);
+
+    initialize(&model, &dev);
+    atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_1);
+    put(&model, 16, 0x768, 0x80000000);   /* left forced by an unclean exit */
+    CHECK(mt_apply_gain(&dev) == BIRRIASDR_ERROR_STATE && !dev.mt7921.gain_saved);
+    CHECK(model.written == 0);
+    atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_0);   /* chain 0 does not check chain 1 */
+    CHECK(mt_apply_gain(&dev) == 0 && dev.mt7921.gain_chains == 1);
+}
+
+/* The overall-gain steps are ascending for every chain selection, start at the
+ * lowest code, and leave digital out of both-chain capture.
+ */
+static void test_gain_steps(void)
+{
+    struct bs_gain_step steps[32];
+    struct birriasdr_gain gain = {0, 0, 0};
+    int tenths;
+    for (unsigned chain = BIRRIASDR_CHAIN_0; chain <= BIRRIASDR_CHAIN_BOTH; ++chain) {
+        int count = mt_gain_steps(chain, steps, 32);
+        CHECK(count == (chain == BIRRIASDR_CHAIN_BOTH ? 14 : 26));
+        CHECK(steps[0].tenths_db == 0 && !steps[0].gain.lna && !steps[0].gain.lpf);
+        for (int i = 1; i < count; ++i) {
+            CHECK(steps[i].tenths_db > steps[i - 1].tenths_db);
+            CHECK(mt_gain_tenths_db(chain, &steps[i].gain, &tenths) == 0 && tenths == steps[i].tenths_db);
+        }
+        CHECK(steps[5].gain.lna == 5 && !steps[5].gain.lpf && steps[13].gain.lpf == 8);
+        CHECK(chain == BIRRIASDR_CHAIN_BOTH || steps[25].gain.digital == 12);
+    }
+    CHECK(mt_gain_steps(BIRRIASDR_CHAIN_0, NULL, 0) == 26);
+    CHECK(mt_gain_steps(3, steps, 32) == BIRRIASDR_ERROR_INVALID);
+    gain.lna = 6;
+    CHECK(mt_gain_tenths_db(BIRRIASDR_CHAIN_0, &gain, &tenths) == BIRRIASDR_ERROR_INVALID);
+}
+
 /* A parked retune must target SPI 0's secondary oscillator, leave the other
  * oscillator untouched, and restore routing on both success and failure.
  * An active capture/GO must reject the operation without any RF writes.
@@ -487,6 +565,8 @@ int main(int argc, char **argv)
     test_trace(argv[1]);
     test_failures();
     test_gain_updates();
+    test_chain_gain();
+    test_gain_steps();
     test_retune();
     test_public_tuning();
     test_fine_tuning();

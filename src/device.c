@@ -332,19 +332,70 @@ static int unsupported_control(birriasdr_dev_t *dev)
     return BIRRIASDR_ERROR_UNSUPPORTED;
 }
 
-/* TODO: measure and implement raw-code to calibrated RF dB conversion. */
+/* The longest overall-gain table any backend publishes. */
+#define BS_MAX_GAIN_STEPS 64
+
+/* Pick the measured step nearest the request (the lower one on a tie) for the
+ * staged receive chain, then commit its codes like set_gain_codes.
+ */
 int birriasdr_set_tuner_gain(birriasdr_dev_t *dev, int tenths_db)
 {
-    (void)tenths_db;
-    return unsupported_control(dev);
+    struct bs_gain_step steps[BS_MAX_GAIN_STEPS];
+    int result, count, best = 0;
+    if (!dev)
+        return BIRRIASDR_ERROR_INVALID;
+    if (!(dev->backend->capabilities & BIRRIASDR_CAP_GAIN_DB) || !dev->backend->gain_steps)
+        return BIRRIASDR_ERROR_UNSUPPORTED;
+    pthread_mutex_lock(&dev->control_mutex);
+    /* The chain is staged under this lock, so the table matches the commit. */
+    count = dev->backend->gain_steps(atomic_load(&dev->receive_chain), steps, BS_MAX_GAIN_STEPS);
+    for (int i = 1; i < count && i < BS_MAX_GAIN_STEPS; ++i)
+        if (abs(steps[i].tenths_db - tenths_db) < abs(steps[best].tenths_db - tenths_db))
+            best = i;
+    if (count <= 0 || count > BS_MAX_GAIN_STEPS)
+        result = count < 0 ? count : BIRRIASDR_ERROR_STATE;
+    else if (atomic_load(&dev->run_state) != BS_IDLE &&
+             (atomic_load(&dev->run_state) != BS_RUNNING || !dev->control_ready))
+        result = BIRRIASDR_ERROR_BUSY;
+    else if (!dev->manual)
+        result = BIRRIASDR_ERROR_STATE;
+    else
+        result = set_gain_locked(dev, true, &steps[best].gain);
+    pthread_mutex_unlock(&dev->control_mutex);
+    return result;
 }
 
-/* TODO: publish measured stage combinations rather than inventing gain values. */
+/* The receive chain changes only while idle, so the table is safe to read
+ * during capture without the control lock.
+ */
 int birriasdr_get_tuner_gains(birriasdr_dev_t *dev, int *gains, size_t capacity)
 {
-    (void)gains;
-    (void)capacity;
-    return unsupported_control(dev);
+    struct bs_gain_step steps[BS_MAX_GAIN_STEPS];
+    int count;
+    if (!dev || (!gains && capacity))
+        return BIRRIASDR_ERROR_INVALID;
+    if (!(dev->backend->capabilities & BIRRIASDR_CAP_GAIN_DB) || !dev->backend->gain_steps)
+        return BIRRIASDR_ERROR_UNSUPPORTED;
+    count = dev->backend->gain_steps(atomic_load(&dev->receive_chain), steps, BS_MAX_GAIN_STEPS);
+    if (count < 0 || count > BS_MAX_GAIN_STEPS)
+        return count < 0 ? count : BIRRIASDR_ERROR_STATE;
+    for (int i = 0; i < count && (size_t)i < capacity; ++i)
+        gains[i] = steps[i].tenths_db;
+    return count;
+}
+
+/* Convert the committed codes, whichever mode is active; no register access. */
+int birriasdr_get_tuner_gain(birriasdr_dev_t *dev, int *tenths_db)
+{
+    struct birriasdr_gain gain;
+    if (!dev || !tenths_db)
+        return BIRRIASDR_ERROR_INVALID;
+    if (!(dev->backend->capabilities & BIRRIASDR_CAP_GAIN_DB) || !dev->backend->gain_tenths_db)
+        return BIRRIASDR_ERROR_UNSUPPORTED;
+    pthread_mutex_lock(&dev->control_mutex);
+    gain = dev->gain;
+    pthread_mutex_unlock(&dev->control_mutex);
+    return dev->backend->gain_tenths_db(atomic_load(&dev->receive_chain), &gain, tenths_db);
 }
 
 /* TODO: identify every relevant AGC loop and validate a complete freeze/release. */

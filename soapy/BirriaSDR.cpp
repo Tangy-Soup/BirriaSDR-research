@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Luigi C.
- * SoapySDR module over libbirriasdr: one RX stream, raw gain indices, no DSP
- * beyond the library's optional 2:1 decimation.
+ * SoapySDR module over libbirriasdr: one RX stream, raw gain indices plus the
+ * library's measured overall gain in dB, no DSP beyond its optional 2:1
+ * decimation.
  */
 #include "birriasdr.h"
 #include <SoapySDR/Device.hpp>
@@ -16,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -35,7 +37,7 @@ constexpr unsigned DEFAULT_MAX_RESTARTS = 16;
 
 struct GainElement { const char *name; unsigned maximum; uint8_t birriasdr_gain::*code; };
 const GainElement GAIN_ELEMENTS[] = {
-    {"LNA", 3, &birriasdr_gain::lna},
+    {"LNA", 5, &birriasdr_gain::lna},
     {"LPF", 8, &birriasdr_gain::lpf},
     {"DIG", 12, &birriasdr_gain::digital},
 };
@@ -532,8 +534,11 @@ public:
         return staged_bandwidth_ ? staged_bandwidth_ : (double)birriasdr_get_tuner_bandwidth(dev_);
     }
 
-    /* Gain: raw hardware indices, not calibrated dB. Automatic mode releases the
-     * manual overrides; codes set meanwhile are kept for the next manual mode.
+    /* Gain elements are raw hardware indices, not dB. The overall gain is the
+     * library's measured relative dB table (birriasdr_set_tuner_gain()), which
+     * picks the nearest step's codes. Automatic mode releases the manual
+     * overrides; codes or an overall gain set meanwhile are kept for the next
+     * manual mode.
      */
     std::vector<std::string> listGains(const int, const size_t) const override
     {
@@ -552,8 +557,15 @@ public:
                     "gain mode"))
             return;
         manual_ = !automatic;
-        if (manual_)
+        if (!manual_)
+            return;
+        if (pending_tenths_db_) {
+            if (report(retry_busy([&] { return birriasdr_set_tuner_gain(dev_, *pending_tenths_db_); }), "gain"))
+                refresh_gain_codes();
+            pending_tenths_db_.reset();
+        } else {
             report(retry_busy([&] { return birriasdr_set_gain_codes(dev_, &gain_); }), "gain codes");
+        }
     }
 
     bool getGainMode(const int, const size_t) const override { return !manual_; }
@@ -565,10 +577,43 @@ public:
 
     SoapySDR::Range getGainRange(const int, const size_t) const override
     {
+        std::vector<int> gains = tuner_gains();
+        if (!gains.empty())
+            return SoapySDR::Range(gains.front() / 10.0, gains.back() / 10.0);
         unsigned total = 0;
         for (const GainElement &element : GAIN_ELEMENTS)
             total += element.maximum;
         return SoapySDR::Range(0, total, 1);
+    }
+
+    /* Overall gain in dB. Without the library's dB table, fall back to Soapy's
+     * default distribution over the raw elements.
+     */
+    void setGain(const int direction, const size_t channel, const double value) override
+    {
+        if (!(caps_ & BIRRIASDR_CAP_GAIN_DB)) {
+            SoapySDR::Device::setGain(direction, channel, value);
+            return;
+        }
+        std::lock_guard<std::mutex> lock(gain_mutex_);
+        int tenths = (int)std::lround(value * 10);
+        if (!manual_) {
+            pending_tenths_db_ = tenths;
+            return;
+        }
+        if (report(retry_busy([&] { return birriasdr_set_tuner_gain(dev_, tenths); }), "gain"))
+            refresh_gain_codes();
+    }
+
+    double getGain(const int direction, const size_t channel) const override
+    {
+        if (!(caps_ & BIRRIASDR_CAP_GAIN_DB))
+            return SoapySDR::Device::getGain(direction, channel);
+        std::lock_guard<std::mutex> lock(gain_mutex_);
+        if (pending_tenths_db_)
+            return *pending_tenths_db_ / 10.0;
+        int tenths = 0;
+        return birriasdr_get_tuner_gain(dev_, &tenths) == 0 ? tenths / 10.0 : 0.0;
     }
 
     void setGain(const int, const size_t, const std::string &name, const double value) override
@@ -585,6 +630,7 @@ public:
         if (manual_ && !report(retry_busy([&] { return birriasdr_set_gain_codes(dev_, &gain); }), "gain codes"))
             return;
         gain_ = gain;
+        pending_tenths_db_.reset();
     }
 
     double getGain(const int, const size_t, const std::string &name) const override
@@ -670,6 +716,25 @@ public:
 
 private:
     friend struct ExitGuard;
+
+    /* The library's overall-gain steps in tenths of a dB; empty without them. */
+    std::vector<int> tuner_gains() const
+    {
+        int count = birriasdr_get_tuner_gains(dev_, nullptr, 0);
+        std::vector<int> gains(count > 0 ? (size_t)count : 0);
+        if (count > 0 && birriasdr_get_tuner_gains(dev_, gains.data(), gains.size()) != count)
+            gains.clear();
+        return gains;
+    }
+
+    /* Mirror the codes the library committed for an overall gain; gain_mutex_ held. */
+    void refresh_gain_codes()
+    {
+        int manual = 0;
+        birriasdr_gain gain;
+        if (birriasdr_get_gain_codes(dev_, &gain, &manual) == 0)
+            gain_ = gain;
+    }
     struct Slot { std::vector<int16_t> iq; size_t count = 0; bool gap = false; long long time_ns = 0; };
     struct GapReport {
         std::chrono::steady_clock::time_point since = std::chrono::steady_clock::now();
@@ -805,6 +870,8 @@ private:
 
     mutable std::mutex gain_mutex_;
     birriasdr_gain gain_ = {1, 4, 0};
+    /* An overall gain set in automatic mode, applied on the next manual mode. */
+    std::optional<int> pending_tenths_db_;
     std::atomic<bool> manual_{false};
     uint32_t staged_bandwidth_ = 0;
     int staged_pd_ = -1;

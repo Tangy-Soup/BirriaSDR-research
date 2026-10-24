@@ -174,10 +174,10 @@ int main(int argc, char **argv)
                 return 1;
             argument += 2;
         } else if (!strcmp(argv[argument], "--gain") && argument + 3 < argc) {
-            if (parse_gain_code(argv[argument + 1], 3, &gain.lna) ||
+            if (parse_gain_code(argv[argument + 1], 5, &gain.lna) ||
                 parse_gain_code(argv[argument + 2], 8, &gain.lpf) ||
                 parse_gain_code(argv[argument + 3], 12, &gain.digital)) {
-                fprintf(stderr, "Gain codes require LNA 0..3, filter 0..8, digital 0..12\n");
+                fprintf(stderr, "Gain codes require LNA 0..5, filter 0..8, digital 0..12\n");
                 return 1;
             }
             explicit_gain = 1;
