@@ -299,10 +299,12 @@ int mt_configure_rf(birriasdr_dev_t *dev)
     BS_TRY(bs_read32(dev, BS_MMIO, 0x02004600, &crystal));
     if (analog != 0x79728a10 || crystal != 40000000)
         return BIRRIASDR_ERROR_UNSUPPORTED;
+    dev->mt7921.band_valid = false;
     BS_TRY(configure_clocks(dev));
     BS_TRY(initialize_chains(dev));
     BS_TRY(select_receive_path(dev));
     /* Bias tables and the anchor tune have put every band field back to 2.4 GHz. */
     dev->mt7921.high_band = false;
+    dev->mt7921.band_valid = true;
     return dev->frequency == MT_RF_ANCHOR_HZ ? 0 : mt_set_frequency(dev, dev->frequency);
 }

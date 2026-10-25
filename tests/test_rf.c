@@ -14,6 +14,7 @@ struct model {
     uint32_t command[2];
     bool stuck_standby;
     uint32_t fail_address;
+    bool fail_after_write;
 };
 
 /* A sparse map models register readbacks, not the production implementation. */
@@ -60,6 +61,7 @@ static int write32(void *context, enum bs_space space, uint32_t address, uint32_
 {
     struct model *model = context;
     unsigned target = (unsigned)space;
+    bool fail;
     if (space == BS_BRIDGE) {
         unsigned index = address >= 0x7c004050;
         uint32_t command;
@@ -73,9 +75,11 @@ static int write32(void *context, enum bs_space space, uint32_t address, uint32_
         target = 16 + ((command >> 13) & 7);
         address = command & 0xfff;
     }
-    if (address == model->fail_address && model->fail_address) {
+    fail = address == model->fail_address && model->fail_address;
+    if (fail) {
         model->fail_address = 0;
-        return BIRRIASDR_ERROR_IO;
+        if (!model->fail_after_write)
+            return BIRRIASDR_ERROR_IO;
     }
     CHECK(model->written < 2048);
     model->writes[model->written++] = (struct word){target, address, value};
@@ -84,7 +88,7 @@ static int write32(void *context, enum bs_space space, uint32_t address, uint32_
     if (target == 21 && address == 0xb00 && model->stuck_standby)
         value |= 0x10000;
     put(model, target, address, value);
-    return 0;
+    return fail ? BIRRIASDR_ERROR_IO : 0;
 }
 
 /* Seed only independently specified identity, strap, completion and trim values. */
@@ -343,6 +347,50 @@ static void test_band_switch(void)
     CHECK(mt_change_frequency(&dev, UINT64_C(3000000000)) == BIRRIASDR_ERROR_UNSUPPORTED);
 }
 
+/* A failed band write may already have reached the radio. In either direction,
+ * rollback must restore both band fields, the VCO and the committed center.
+ */
+static void test_band_switch_failures(void)
+{
+    static const uint64_t frequencies[] = {MT_RF_ANCHOR_HZ, UINT64_C(5735000000)};
+    static const uint32_t addresses[] = {0xc00, 0x160};
+    for (unsigned band = 0; band < 2; ++band) {
+        for (unsigned field = 0; field < 2; ++field) {
+            for (unsigned applied = 0; applied < 2; ++applied) {
+                struct model model;
+                birriasdr_dev_t dev;
+                uint32_t lo, synth, receiver, word, cycles;
+                initialize(&model, &dev);
+                dev.backend = &bs_mt7921_backend;
+                dev.frequency = frequencies[band];
+                atomic_init(&dev.run_state, BS_IDLE);
+                CHECK(pthread_mutex_init(&dev.control_mutex, NULL) == 0);
+                CHECK(mt_configure_rf(&dev) == 0);
+                lo = get(&model, 16, 0xc00);
+                synth = get(&model, 16, 0x160);
+                receiver = get(&model, 17, 0x160);
+                word = get(&model, 16, 0xca8);
+                cycles = get(&model, 16, 0xcac);
+                atomic_store(&dev.run_state, BS_RUNNING);
+                dev.control_ready = true;
+                model.fail_address = addresses[field];
+                model.fail_after_write = applied != 0;
+                CHECK(birriasdr_set_center_freq(&dev, frequencies[1 - band]) == BIRRIASDR_ERROR_IO);
+                CHECK(model.fail_address == 0);
+                CHECK(get(&model, 16, 0xc00) == lo);
+                CHECK(get(&model, 16, 0x160) == synth);
+                CHECK(get(&model, 17, 0x160) == receiver);
+                CHECK(get(&model, 16, 0xca8) == word);
+                CHECK(get(&model, 16, 0xcac) == cycles);
+                CHECK(birriasdr_get_center_freq(&dev) == frequencies[band]);
+                CHECK(atomic_load(&dev.run_state) == BS_CONTROL_FAILED);
+                CHECK(dev.control_error == BIRRIASDR_ERROR_IO);
+                CHECK(pthread_mutex_destroy(&dev.control_mutex) == 0);
+            }
+        }
+    }
+}
+
 /* Exercise both low fractional bits through normal startup and the live public
  * setter. A failed update must restore the previous fine word and API metadata,
  * not round the rollback to the old 18-bit grid. No physical resolution is tested.
@@ -384,5 +432,6 @@ int main(int argc, char **argv)
     test_public_tuning();
     test_fine_tuning();
     test_band_switch();
+    test_band_switch_failures();
     return 0;
 }

@@ -191,16 +191,19 @@ int mt_tune_2g(birriasdr_dev_t *dev, unsigned port, bool secondary,
     return tune_plan(dev, port, secondary, &plan, false);
 }
 
-/* Move the LO path and front end between bands. Commit the state only after
- * both writes succeed, so a failed switch is retried by the next retune.
+/* Move the LO path and front end between bands. Invalidate the cached band
+ * before either write: a failed transfer may already have changed hardware.
+ * Retries, including rollback to the previous band, must reapply both fields.
  */
 static int select_band(birriasdr_dev_t *dev, bool high)
 {
-    if (dev->mt7921.high_band == high)
+    if (dev->mt7921.band_valid && dev->mt7921.high_band == high)
         return 0;
+    dev->mt7921.band_valid = false;
     BS_TRY(mt_rf_update(dev, MT_SYNTH_PORT, 0xc00, 0x3c, high ? 0x38 : 0x28));
     BS_TRY(mt_rf_update(dev, MT_RX_PORT, 0x160, 1u << 29, high ? 1u << 29 : 0));
     dev->mt7921.high_band = high;
+    dev->mt7921.band_valid = true;
     return 0;
 }
 
