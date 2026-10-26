@@ -240,6 +240,66 @@ another driver loaded firmware onto it. The library refuses to run while a
 kernel driver is attached, and it never unloads drivers or power-cycles a USB
 hub.
 
+### Bluetooth LE advertising collector
+
+`birria_ble` demodulates LE 1M advertising as the samples arrive and keeps only
+CRC-valid PDUs, so a run of any length stores a few hundred bytes per packet
+instead of 160 MB/s of I/Q:
+
+```sh
+./build/birria_ble --pd-n8 --seconds 300 survey          # channels 37 + 38 at 2414 MHz
+./build/birria_ble --input capture.cs16 --frequency 2437000000 offline
+```
+
+The default 2414 MHz / 40 MSps puts channel 37 (2402 MHz) and channel 38
+(2426 MHz) 12 MHz either side of the center. No 40 MHz span holds all three
+advertising channels. Advertisers send each event on all three, so two
+channels see every advertiser. `--frequency 2453000000 --rate 80000000`
+covers 38 + 39 at the experimental rate. Any channel at least 3 MHz inside
+Nyquist is decoded; `--channels 37,38,39` restricts the list.
+
+Each channel goes through a table mixer, an order-3 CIC-shaped FIR to 8 MSps
+and a 48-tap 0.75 MHz FIR to 4 MSps. Then an FM discriminator and a per-phase
+access-address correlator; the decision threshold follows the local mean
+frequency, which absorbs carrier offset. A least-squares DC and amplitude fit
+on the access address sets the slicer, then dewhitening and CRC-24. A failed
+CRC is retried one sample early and one late. Nothing is corrected to fit the
+CRC, and `--aa-errors` (default 1) bounds access-address bit errors.
+
+Outputs, created next to each other and never overwritten:
+
+- `survey.jsonl`: one line per valid PDU. Fields: time (Unix, or seconds from
+  file start with `--input`), channel, uncalibrated dBFS power, SNR over a
+  running noise floor, carrier offset, PDU type, TxAdd, first address, PDU hex.
+- `survey.pcap`: the same packets as `LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR` for
+  Wireshark (`--no-pcap` skips it).
+- `survey.summary.json`: per-channel valid/failed/blanked counts, an
+  advertiser table (packets per channel, first/last seen, best SNR, name,
+  company ID), dropped samples, gaps, CPU seconds and peak RSS.
+
+`decoders/ble_report.py survey.jsonl` expands the advertising data (names,
+manufacturer data, service UUIDs) through `decoders/ble.py`'s parser.
+
+Logging stops at `--max-bytes` (default 5,000,000,000, with 16 MiB kept for the
+summary); counting continues. The USB callback only copies into a 40 MiB ring
+(262 ms at 40 MSps), and a worker thread demodulates. If the worker ever falls
+behind, whole blocks are dropped and counted rather than stalling USB. Gaps use
+the library's [automatic recovery](#automatic-recovery) and reset the
+demodulator. `--pd-n8` discards the first ~600 ms, as in `birria_rx`.
+
+On a 1 s, 2437 MHz recording, channel 38 gave 37 CRC-valid PDUs, against 29
+from `decoders/ble.py`. All 29 were among them. Offline, two channels took
+0.32 s of CPU per second of 40 MSps input (Ryzen 5 7500F, WSL2) in 5.5 MB RSS.
+Wireshark recomputed every CRC in the PCAP as correct.
+
+Live on the EDUP board over usbipd (2026-10-26, `--pd-n8 --seconds 300`, AGC):
+6,299 valid PDUs from 14 addresses in 300 s (channels 37 and 38: 3,048 and
+3,251 valid; 212 and 197 failed CRC, 172 of the 409 with blanking inside). No
+samples were dropped and there were no gaps. Output was 1.6 MB, with 91 MB peak
+RSS, and 0.81 CPU-seconds per second (0.54 user, 0.27 system). The same stream
+recorded by `birria_rx` took 0.55 CPU-seconds per second and 160 MB/s of disk,
+so the demodulator adds about a third of a core.
+
 ## API
 
 The library follows the familiar enumerate, open, configure, read, cancel and

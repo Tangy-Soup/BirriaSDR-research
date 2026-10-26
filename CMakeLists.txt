@@ -49,11 +49,18 @@ set_target_properties(birriasdr PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 
 add_executable(birria_rx examples/birria_rx.c)
 target_link_libraries(birria_rx PRIVATE birriasdr)
 target_compile_definitions(birria_rx PRIVATE _POSIX_C_SOURCE=200809L)
+add_executable(birria_ble examples/birria_ble.c)
+target_link_libraries(birria_ble PRIVATE birriasdr Threads::Threads m)
+target_compile_definitions(birria_ble PRIVATE _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    # The FIR and discriminator loops only vectorize with reassociation.
+    target_compile_options(birria_ble PRIVATE -O3 -ffast-math)
+endif()
 file(RELATIVE_PATH BIRRIA_BIN_TO_LIB "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}")
 if(APPLE)
-    set_target_properties(birria_rx PROPERTIES INSTALL_RPATH "@loader_path/${BIRRIA_BIN_TO_LIB}")
+    set_target_properties(birria_rx birria_ble PROPERTIES INSTALL_RPATH "@loader_path/${BIRRIA_BIN_TO_LIB}")
 elseif(UNIX)
-    set_target_properties(birria_rx PROPERTIES INSTALL_RPATH "$ORIGIN/${BIRRIA_BIN_TO_LIB}")
+    set_target_properties(birria_rx birria_ble PROPERTIES INSTALL_RPATH "$ORIGIN/${BIRRIA_BIN_TO_LIB}")
 endif()
 
 if(BUILD_TESTING)
@@ -165,7 +172,7 @@ endif()
 file(RELATIVE_PATH BIRRIA_PC_TO_PREFIX "${CMAKE_INSTALL_FULL_LIBDIR}/pkgconfig" "${CMAKE_INSTALL_PREFIX}")
 file(RELATIVE_PATH BIRRIA_PC_TO_INCLUDE "${CMAKE_INSTALL_FULL_LIBDIR}/pkgconfig" "${CMAKE_INSTALL_FULL_INCLUDEDIR}")
 configure_file(birriasdr.pc.in birriasdr.pc @ONLY)
-install(TARGETS birriasdr birria_rx
+install(TARGETS birriasdr birria_rx birria_ble
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
