@@ -372,7 +372,7 @@ directory.
 | Channels | RX 0 is chain 0. With chain selection, RX 1 is chain 1, and a stream on channels `{0, 1}` captures both chains, deinterleaved into one buffer per channel. Chain 1 and both chains are research settings, as above |
 | Formats | Native `CS16` with full scale 8192, or `CF32` scaled to ±1 |
 | Sample rate | 40 MSps, or 20 MSps through the library's 2:1 halfband (flat to ±8.5 MHz). 20 MSps is single-chain only. Experimental 80 MSps, single chain; `getBandwidth` then reports the 80 MHz profile |
-| Frequency | One `RF` component over the tuning range, retuned live. An out-of-range request is logged and leaves the tuner where it was |
+| Frequency | One `RF` component, retuned live, including across bands. `getFrequencyRange` lists each band separately (2156 or 2190 to 2610 MHz, and 4500 to 6200 MHz on MT7921). A request outside every band, including the gap between them, is logged and leaves the tuner where it was. 80 MSps is refused at 5 GHz |
 | Bandwidth | 20 or 40 MHz, rounded to the nearer one. A change during a stream applies at the next stream start |
 | Gain mode | Automatic releases the manual overrides; manual applies the cached codes |
 | Gain elements | `LNA` 0 to 5, `LPF` 0 to 8 and `DIG` 0 to 12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode |

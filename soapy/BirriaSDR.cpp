@@ -4,6 +4,7 @@
  * library's measured overall gain in dB, no DSP beyond its optional 2:1
  * decimation.
  */
+#include "bands.hpp"
 #include "birriasdr.h"
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Formats.hpp>
@@ -420,12 +421,22 @@ public:
     /* Frequency: one tuner shared by both chains, live retuning supported. */
     std::vector<std::string> listFrequencies(const int, const size_t) const override { return {"RF"}; }
 
+    /* One range per contiguous band (2.4 and 5 GHz on MT7921), so applications
+     * see the gap between them instead of one interval spanning it.
+     */
+    std::vector<birria_soapy::Band> bands() const
+    {
+        return birria_soapy::collect_bands([this](uint32_t index, uint64_t *minimum, uint64_t *maximum) {
+            return birriasdr_get_tuning_band(dev_, index, minimum, maximum);
+        });
+    }
+
     SoapySDR::RangeList getFrequencyRange(const int, const size_t) const override
     {
-        uint64_t minimum, maximum;
-        if (birriasdr_get_tuning_range(dev_, &minimum, &maximum))
-            return {};
-        return {SoapySDR::Range((double)minimum, (double)maximum)};
+        SoapySDR::RangeList ranges;
+        for (const birria_soapy::Band &band : bands())
+            ranges.emplace_back((double)band.minimum, (double)band.maximum);
+        return ranges;
     }
 
     SoapySDR::RangeList getFrequencyRange(const int direction, const size_t channel,
@@ -434,18 +445,27 @@ public:
         return getFrequencyRange(direction, channel);
     }
 
-    /* An out-of-range request (SDR++ starts at 100 MHz) leaves the tuner unchanged. */
+    /* A request outside every band (SDR++ starts at 100 MHz; the 2.4/5 GHz gap)
+     * leaves the tuner unchanged. With no band list the library decides.
+     */
     void setFrequency(const int, const size_t, const double frequency, const SoapySDR::Kwargs &) override
     {
-        uint64_t minimum = 0, maximum = 0;
-        bool known = birriasdr_get_tuning_range(dev_, &minimum, &maximum) == 0;
-        if (!(frequency > 0) || (known && (frequency < minimum || frequency > maximum))) {
-            SoapySDR::logf(SOAPY_SDR_ERROR, "BirriaSDR: %.6f MHz is outside %.0f-%.0f MHz; staying at %.6f MHz",
-                           frequency / 1e6, minimum / 1e6, maximum / 1e6,
-                           birriasdr_get_center_freq(dev_) / 1e6);
+        const std::vector<birria_soapy::Band> known = bands();
+        uint64_t hz = birria_soapy::in_band(known, frequency);
+        if (!hz && known.empty() && frequency > 0 && frequency <= 1e15)
+            hz = (uint64_t)std::llround(frequency);
+        if (!hz) {
+            std::string list;
+            for (const birria_soapy::Band &band : known) {
+                char text[48];
+                std::snprintf(text, sizeof(text), "%s%.0f-%.0f", list.empty() ? "" : ", ",
+                              band.minimum / 1e6, band.maximum / 1e6);
+                list += text;
+            }
+            SoapySDR::logf(SOAPY_SDR_ERROR, "BirriaSDR: %.6f MHz is outside the tuning bands (%s MHz); staying at %.6f MHz",
+                           frequency / 1e6, list.c_str(), birriasdr_get_center_freq(dev_) / 1e6);
             return;
         }
-        uint64_t hz = (uint64_t)std::llround(frequency);
         report(retry_busy([&] { return birriasdr_set_center_freq(dev_, hz); }), "frequency");
     }
 
