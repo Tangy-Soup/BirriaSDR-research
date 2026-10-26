@@ -10,7 +10,17 @@
 #include <string.h>
 
 static volatile sig_atomic_t interrupted;
-struct recorder { birriasdr_dev_t *dev; FILE *file; uint64_t limit, count, skip; int error; };
+struct recorder {
+    birriasdr_dev_t *dev;
+    FILE *file, *gaps;
+    uint64_t limit, count, skip, gap_count;
+    int error;
+};
+
+/* Full restarts allowed per read with --recover, as in the SoapySDR module;
+ * clean overruns are recovered without spending this budget.
+ */
+#define RECOVER_MAX_RESTARTS 16u
 
 /* Signal handlers only set a flag; library cancellation runs in normal context. */
 static void on_signal(int signal_number)
@@ -56,6 +66,25 @@ static void record(const int16_t *iq, uint32_t count, uint64_t first, void *cont
     }
     write_iq(iq, count, recorder);
     if (interrupted || recorder->error || (recorder->limit && recorder->count >= recorder->limit))
+        birriasdr_cancel_async(recorder->dev);
+}
+
+/* --recover: the library has flushed every sample before the gap, so the
+ * recorder's count is the file position where continuity breaks. Samples from
+ * that index on follow a gap of unknown length; nothing is inserted. A gap
+ * inside the --discard prefix is logged at file sample 0. The log is flushed
+ * per line so it stays usable if the recording is killed.
+ */
+static void on_gap(const struct birriasdr_recovery_event *event, void *context)
+{
+    struct recorder *recorder = context;
+    ++recorder->gap_count;
+    if (fprintf(recorder->gaps, "%llu %llu %u %u %s\n", (unsigned long long)recorder->count,
+                (unsigned long long)event->next_sample, event->attempt,
+                event->previous.firmware_state, birriasdr_strerror(event->error)) < 0 ||
+        fflush(recorder->gaps))
+        recorder->error = 1;
+    if (recorder->error)
         birriasdr_cancel_async(recorder->dev);
 }
 
@@ -135,11 +164,16 @@ int main(int argc, char **argv)
     uint64_t discard = 11719 * 2048;
     int result, close_result, argument = 1, explicit_gain = 0, buffered = 0;
     int pd_n8 = 0, explicit_discard = 0, chain = BIRRIASDR_CHAIN_0, channel_filter = 0;
+    int recover = 0;
+    char gaps_path[4096];
     if (argc == 2 && !strcmp(argv[1], "--list"))
         return list_devices();
     while (argument < argc && !strncmp(argv[argument], "--", 2)) {
         if (!strcmp(argv[argument], "--buffered")) {
             buffered = 1;
+            ++argument;
+        } else if (!strcmp(argv[argument], "--recover")) {
+            recover = 1;
             ++argument;
         } else if (!strcmp(argv[argument], "--frequency") && argument + 1 < argc) {
             if (parse_number(argv[argument + 1], &frequency))
@@ -188,7 +222,7 @@ int main(int argc, char **argv)
         }
     }
     if (argc - argument < 1 || argc - argument > 3) {
-        fprintf(stderr, "Usage: %s --list | [--buffered] [--frequency Hz] [--rate Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--chain 0|1|both] [--discard SAMPLES] output.cs16 [complex-samples [manual]]\n", argv[0]);
+        fprintf(stderr, "Usage: %s --list | [--buffered | --recover] [--frequency Hz] [--rate Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--chain 0|1|both] [--discard SAMPLES] output.cs16 [complex-samples [manual]]\n", argv[0]);
         return 1;
     }
     if (argc - argument >= 2 && parse_number(argv[argument + 1], &recorder.limit))
@@ -216,6 +250,15 @@ int main(int argc, char **argv)
         return 1;
     }
     recorder.skip = discard;
+    /* Finite buffered reads stay strict; recovery belongs to streamed reads. */
+    if (recover && buffered) {
+        fprintf(stderr, "--recover streams to the file and cannot be combined with --buffered\n");
+        return 1;
+    }
+    if (recover && snprintf(gaps_path, sizeof(gaps_path), "%s.gaps", argv[argument]) >= (int)sizeof(gaps_path)) {
+        fprintf(stderr, "Output path too long for the gap log\n");
+        return 1;
+    }
     /* Buffered reads hold up to two seconds at 40 MSps (320 MB), or at 80 MSps. */
     uint64_t buffer_limit = rate == 80000000 ? 160000000 : 80000000;
     if (buffered && (!recorder.limit || recorder.limit + discard > buffer_limit ||
@@ -284,7 +327,29 @@ int main(int argc, char **argv)
         birriasdr_close(dev);
         return 1;
     }
-    if (explicit_gain || argc - argument == 3) {
+    if (recover) {
+        recorder.gaps = fopen(gaps_path, "wx");
+        if (!recorder.gaps) {
+            perror("Gap log (must not already exist)");
+            fclose(recorder.file);
+            birriasdr_close(dev);
+            return 1;
+        }
+        if (fprintf(recorder.gaps, "# birria_rx gap log for %s\n"
+                                   "# file_sample next_sample attempt firmware_state error\n"
+                                   "# file_sample: first sample in the file after a gap of unknown length\n",
+                    argv[argument]) < 0 || fflush(recorder.gaps)) {
+            perror("Gap log");
+            fclose(recorder.gaps);
+            fclose(recorder.file);
+            birriasdr_close(dev);
+            return 1;
+        }
+        result = birriasdr_set_recovery(dev, RECOVER_MAX_RESTARTS, on_gap, &recorder);
+        if (result < 0)
+            fprintf(stderr, "Recovery: %s\n", birriasdr_strerror(result));
+    }
+    if (!result && (explicit_gain || argc - argument == 3)) {
         result = birriasdr_set_tuner_gain_mode(dev, 1);
         if (!result)
             result = birriasdr_set_gain_codes(dev, &gain);
@@ -317,12 +382,16 @@ int main(int argc, char **argv)
     close_result = birriasdr_close(dev);
     if (fclose(recorder.file))
         recorder.error = 1;
+    if (recorder.gaps && fclose(recorder.gaps))
+        recorder.error = 1;
     if (discard && !result)
         fprintf(stderr, "Discarded the first %llu complex samples%s\n", (unsigned long long)discard,
                 pd_n8 ? " (packet-detect suppression settling)" : "");
     if (chain == BIRRIASDR_CHAIN_BOTH)
         fprintf(stderr, "Both chains: samples alternate chain 0, chain 1 at 40 MSps each; "
                         "each chain carries a DC offset to remove before decoding\n");
+    if (recover)
+        fprintf(stderr, "Recovered %llu gaps, logged in %s\n", (unsigned long long)recorder.gap_count, gaps_path);
     fprintf(stderr, "Saved %llu complex samples; stream=%s; firmware state=%u; stage=%d; reset=%s\n",
              (unsigned long long)recorder.count, birriasdr_strerror(result),
              stats.firmware_state, stats.stage, birriasdr_strerror(stats.reset_error));

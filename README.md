@@ -159,6 +159,33 @@ Cancellation is checked after the bounded synchronous read. Failed acquisitions
 are not written; a disk write failure still returns an error. This option does
 not enlarge the device's SRAM ring or guarantee freedom from overruns.
 
+For long streamed recordings, `--recover` keeps writing across gaps instead of
+stopping at the first one:
+
+```sh
+./build/birria_rx --recover --frequency 2437000000 --gain 3 8 0 long.cs16
+```
+
+It enables the library's [automatic recovery](#automatic-recovery) with a
+budget of 16 full restarts. Clean overruns don't spend it. Each gap is logged to
+`long.cs16.gaps`, created next to the recording and also never overwritten. One
+line per gap gives the file sample index where the gap falls, the library's
+`next_sample`, the recovery attempt, the firmware state and the error. Samples
+from that file index on follow a gap of unknown length, and nothing is inserted
+to fill it. The log is flushed after every line. The exit status stays zero when
+every gap was recovered, so check the log. Restarts reapply the settings, so
+`--pd-n8` blanking can return while the detector settles again. The option
+cannot be combined with `--buffered`, whose finite reads stay strict. At
+40 MSps the file grows by about 160 MB/s, and by half that with
+`--rate 20000000`.
+
+On the EDUP board over usbipd (2026-10-25), 30 s at 40 MSps to disk and 11 s
+at 20 MSps, stopped with Ctrl-C, recorded no gaps. Recording at 80 MSps is not gap-free:
+about 0.9 gaps per second even into RAM, and up to 85 per
+second once disk writeback throttled after about 20 s of a 30 s recording.
+The recorder converts and writes in the read callback, so its I/O directly
+slows the stream.
+
 To suppress the PHY's packet-detect blanking (opt-in research setting, see
 [packet-detect suppression](docs/mt7921.md#packet-detect-suppression)):
 
