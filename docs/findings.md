@@ -1,8 +1,9 @@
-# Research findings: an EDUP MT7921AU as a raw-I/Q receiver
+# Research findings: an EDUP EP-AX1672 as a raw-I/Q receiver
 
-These notes collect what we measured while running BirriaSDR on an EDUP
-MT7921AU USB 3 adapter (`0e8d:7961`, MT7961 digital die and MT7972 analog die,
-40 MHz crystal) in October 2026. The aim was to decode 2.4 GHz Wi-Fi and BLE
+These notes collect what we measured while running BirriaSDR on an
+[EDUP EP-AX1672](https://www.szedup.com/usb-adaptersBr3/EP1672.html), an AX3000
+Wi-Fi 6E USB 3 adapter built on the MediaTek MT7921AU (`0e8d:7961`, MT7961
+digital die and MT7972 analog die, 40 MHz crystal), in October 2026. The aim was to decode 2.4 GHz Wi-Fi and BLE
 straight from the I/Q, compare the result with a stock Wi-Fi adapter, and
 find out what limits it.
 
@@ -41,7 +42,7 @@ refers to them by role ("a weak channel-6 AP") rather than by name or address.
 
 | Item | Details |
 | --- | --- |
-| Receiver | EDUP MT7921AU, two RP-SMA ports. Port **A is chain 0 (WF0)**, port **B is chain 1 (WF1)**. |
+| Receiver | EDUP EP-AX1672, two RP-SMA ports with the stock 5 dBi antennas unless noted. Port **A is chain 0 (WF0)**, port **B is chain 1 (WF1)**. |
 | Host | Windows with WSL2 (Ubuntu), the adapter passed through with usbipd-win at 5000M. Custom WSL kernel with `rtw88` built in and `mt7921u` left out, so the stock driver can't claim the adapter. |
 | Reference receiver | A TP-Link RTL8822BU adapter in monitor mode (rtw88), plus Windows' own scan list. Later, `mt7921u` in monitor mode on the same EDUP (one driver at a time; see §11). |
 | Recorder | `birria_rx`, 40 MSps complex int16 (`.cs16`), mostly 1–2 s captures per channel |

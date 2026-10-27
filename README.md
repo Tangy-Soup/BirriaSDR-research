@@ -3,8 +3,10 @@
 > [!NOTE]
 >
 > **This is a research fork** of [luigifcruz/BirriaSDR](https://github.com/luigifcruz/BirriaSDR),
-> based on upstream `cbe0575`. It was developed on an EDUP MT7921AU adapter
-> (`0e8d:7961`) under WSL2 and adds, mostly as opt-in options:
+> based on upstream `cbe0575`. It was developed on an
+> [EDUP EP-AX1672](https://www.szedup.com/usb-adaptersBr3/EP1672.html)
+> (AX3000 Wi-Fi 6E, MediaTek MT7921AU, USB ID `0e8d:7961`) under WSL2 and adds,
+> mostly as opt-in options:
 >
 > - a SoapySDR module (`-DBIRRIASDR_SOAPY=ON`, `driver=birriasdr`);
 > - packet-detect suppression, which removes the exact-zero sample blanking;
@@ -14,8 +16,13 @@
 > - Python Wi-Fi and BLE decoders in [tools/decoders](tools/decoders/README.md).
 >
 > The measurements behind these, including what didn't work, are in
-> [docs/findings.md](docs/findings.md). Several of these overlap open upstream
-> pull requests that take different approaches. The rest of this README is
+> [docs/findings.md](docs/findings.md). Several of these additions overlap open
+> upstream pull requests that take different approaches.
+>
+> Upstream's own testing, described below, is on a COMFAST `3574:6211` dongle
+> with the same MT7961 and MT7972 dies. This fork's additions were tested only
+> on the EP-AX1672; where this README or [docs/mt7921.md](docs/mt7921.md) says
+> "the EDUP board", it means that adapter. The rest of this README is
 > upstream's, updated for the additions.
 
 Turn a supported USB Wi-Fi dongle into an experimental SDR receiver with
@@ -67,8 +74,9 @@ volatile and disappears when the dongle loses power. The device program's
 assembly source lives in [`firmware/iq_stream.S`](firmware/iq_stream.S), and the
 library embeds its assembled image.
 
-The tested hardware is the **COMFAST MT7961/MT7921AU dongle (`3574:6211`)**,
-which pairs an MT7961 digital die with an MT7972 analog die. By default the
+Upstream's tested hardware is the **COMFAST MT7961/MT7921AU dongle
+(`3574:6211`)**; this fork's additions were tested on an **EDUP EP-AX1672**
+(`0e8d:7961`). Both pair an MT7961 digital die with an MT7972 analog die. By default the
 receiver is centered on Wi-Fi channel 6 (nominally 2437 MHz) and uses receive
 chain 0 at 40 million complex samples per second. The library can retune
 anywhere in the 2156 to 2610 MHz and 4500 to 6200 MHz bands, even while
