@@ -24,3 +24,8 @@ __pycache__/
 .idea/
 *.swp
 *~
+
+# Research output: raw I/Q and decoded captures carry real network identities.
+/captures/
+*.cs16.xz
+*.pcap

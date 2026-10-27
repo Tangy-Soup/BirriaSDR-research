@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+*.cs16
+*.cs16.xz
+*.pcap
