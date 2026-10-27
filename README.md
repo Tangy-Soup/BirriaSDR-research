@@ -1,5 +1,23 @@
 # BirriaSDR
 
+> [!NOTE]
+>
+> **This is a research fork** of [luigifcruz/BirriaSDR](https://github.com/luigifcruz/BirriaSDR),
+> based on upstream `cbe0575`. It was developed on an EDUP MT7921AU adapter
+> (`0e8d:7961`) under WSL2 and adds, mostly as opt-in options:
+>
+> - a SoapySDR module (`-DBIRRIASDR_SOAPY=ON`, `driver=birriasdr`);
+> - packet-detect suppression, which removes the exact-zero sample blanking;
+> - chain 1 and both-chain capture, the post-filter channel tap, 20 and 80 MSps,
+>   and a per-chain gain table in dB;
+> - `birria_ble`, a streaming BLE advertising collector, and `birria_rx --recover`;
+> - Python Wi-Fi and BLE decoders in [tools/decoders](tools/decoders/README.md).
+>
+> The measurements behind these, including what didn't work, are in
+> [docs/findings.md](docs/findings.md). Several of these overlap open upstream
+> pull requests that take different approaches. The rest of this README is
+> upstream's, updated for the additions.
+
 Turn a supported USB Wi-Fi dongle into an experimental SDR receiver with
 **14-bit I/Q at 40 MSps complex**.
 
@@ -547,5 +565,6 @@ BirriaSDR builds on open-source drivers and earlier research into using Wi-Fi ha
 - The upstream [mt76](https://github.com/openwrt/mt76) Linux driver and its contributors, which the userspace work builds on.
 - The [W1700K SDR](https://github.com/h0m3us3r/w1700k-sdr) project by h0m3us3r, related work that turns Wi-Fi hardware into a wideband SDR and documents capture registers and sample-clock controls.
 - The [MtkICAPtool](https://github.com/MtkWifiRev/MtkICAPtool) project by MtkWifiRev, earlier work that exposed the chipset’s internal I/Q capture capabilities.
+- The [Mtk79ICAP](https://github.com/MtkWifiRev/Mtk79ICAP) project by MtkWifiRev, whose vendor-firmware MT7921 work supplied the BW80 recipe, gain-hold layout and tap interpretation this fork re-implements, and the Soapy test scripts it adapts.
 
 Third-party code keeps its original licenses and copyright notices.

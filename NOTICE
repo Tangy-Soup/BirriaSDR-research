@@ -17,3 +17,19 @@ libusb is a separate dependency under LGPL-2.1-or-later. The library does not
 embed libusb, NumPy, Python, a vendor ROM dump, or vendor RAM/patch firmware.
 The original device program calls immutable factory-ROM routines already present
 in the chip. No nonvolatile programming is implemented.
+
+Fork additions (the SoapySDR module, chain selection, packet-detect
+suppression, channel filter, 20/80 MSps, dB gain, birria_ble, tools/decoders/,
+tools/research_probes/ and docs/findings.md) are by the contributors in this
+repository's Git history, under the same MIT license.
+
+soapy/tests/soapy_rate_test.py, soapy_tune_test.py and osmosdr_test.py adapt
+scripts from Mtk79ICAP's userspace/SoapyMT7921/, MIT license, copyright (c) 2026
+the MtkWifiRev contributors; see LICENSES/MIT-Mtk79ICAP.txt. The 2.4 GHz BW80
+register recipe, the per-chain gain-hold layout and the ICAP tap 12/13
+interpretation were research leads from Mtk79ICAP's driver/mt7921/iqstream.c,
+re-implemented here and checked on hardware: https://github.com/MtkWifiRev/Mtk79ICAP
+
+tools/decoders/ needs NumPy, SciPy and Matplotlib, which are separate
+dependencies under their own licenses. No captured I/Q, vendor firmware or ROM
+image is included.
