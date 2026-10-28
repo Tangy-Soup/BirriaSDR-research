@@ -41,6 +41,12 @@ cd tools/decoders
 .venv/bin/python wifi.py recording.cs16 --center 2437 --phy ofdm --packets
 ```
 
+5 GHz captures take their real centre and channel numbers (32–68, 96–144 and
+149–177 in steps of 4), e.g. `wifi.py rec.cs16 --center 5180
+--channel 36`; without `--channel` the channel nearest the centre is decoded.
+5 GHz channels decode OFDM only (802.11b exists only at 2.4 GHz). A channel must
+lie within 9 MHz of the capture centre in both bands.
+
 `--phy both` is the default. DSSS uses a 6 dB threshold above the lower-fifth
 power estimate and accepts bursts of at least 60 microseconds. Change these
 with `--threshold-db` and `--min-us`. OFDM uses normalized short-training
@@ -290,7 +296,7 @@ OFDM frame under a 40 ppm sampling-clock offset; a timing step mid-frame
 (needs the per-symbol retry); HT MCS 0–7 with and without STBC and short
 guard interval, A-MPDUs with a corrupted MPDU, a bad HT-SIG CRC, and a
 two-antenna transmitter whose legacy fields use other cyclic shifts (L-LTF
-not averaged in); long and
+not averaged in); 5 GHz channel numbers (OFDM only); long and
 short DSSS preambles; both supported DSSS rates; packet detection across chunk
 boundaries; 40 MSps resampling; malformed headers; bad CRC; truncation; rejection
 of noise and tones; AP identity parsing; JSON serialization; and PCAP filtering.

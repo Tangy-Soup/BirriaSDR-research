@@ -88,7 +88,9 @@ def decode_window(x, center, channels, phy, threshold_db, min_us, stf_threshold,
     for ch in channels:
         if abs(wifi_b.channel_mhz(ch) - center) > 9:
             raise ValueError(f'Channel {ch} is outside the reliable interior of this capture; retune to its center')
-        if phy in ('both', 'dsss'):
+        if phy == 'dsss' and ch > 14:
+            raise ValueError(f'Channel {ch} is a 5 GHz channel; 802.11b DSSS exists only at 2.4 GHz')
+        if phy in ('both', 'dsss') and ch <= 14:
             before = len(packets)
             wifi_b.decode_channel(x, center, ch, threshold_db, min_us, packets, quiet=True,
                                   sync_search=dsss_sync_search, cck=cck, recover=recover)
@@ -280,7 +282,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('capture', type=Path)
     ap.add_argument('--center', type=float, required=True, help='Capture center in MHz')
-    ap.add_argument('--channel', type=int, nargs='+', choices=range(1, 15))
+    ap.add_argument('--channel', type=int, nargs='+', choices=wifi_b.CHANNELS, metavar='N',
+                    help='2.4 or 5 GHz channel number(s) (default: the one at the centre); '
+                         '5 GHz channels decode OFDM only')
     ap.add_argument('--phy', choices=['both', 'dsss', 'ofdm'], default='both')
     ap.add_argument('--threshold-db', type=float, default=6)
     ap.add_argument('--min-us', type=float, default=60)
@@ -310,7 +314,7 @@ def main():
         ap.error('Capture size must be a multiple of four bytes (I,Q pairs)')
     if args.combine and (args.of not in (1, 2) or args.slot):
         ap.error('--combine decodes both slots of a two-slot recording; drop --slot and use --of 2 or omit it')
-    channels = args.channel or [min(range(1, 15), key=lambda c: abs(wifi_b.channel_mhz(c) - args.center))]
+    channels = args.channel or [wifi_b.nearest_channel(args.center)]
     if args.combine and not args.dc_block:
         args.dc_block = 65536
     try:

@@ -14,7 +14,7 @@ import numpy as np
 from scipy import signal
 
 from cs16 import load, shift
-from wifi_b import channel_mhz, describe
+from wifi_b import CHANNELS, channel_mhz, describe, nearest_channel
 
 FS = 20_000_000
 ACTIVE = np.r_[np.arange(-26, 0), np.arange(1, 27)]
@@ -498,14 +498,15 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('capture')
     ap.add_argument('--center', type=float, required=True)
-    ap.add_argument('--channel', type=int, nargs='+', choices=range(1, 15))
+    ap.add_argument('--channel', type=int, nargs='+', choices=CHANNELS, metavar='N',
+                    help='2.4 or 5 GHz channel number(s) (default: the one at the centre)')
     ap.add_argument('--stf-threshold', type=float, default=0.65)
     ap.add_argument('--json', type=Path, help='Write packet results; only valid frames include identities')
     args = ap.parse_args()
     if not 0 < args.stf_threshold < 1:
         ap.error('--stf-threshold must be between zero and one')
     x, results = load(args.capture), []
-    for ch in args.channel or [min(range(1, 15), key=lambda c: abs(channel_mhz(c) - args.center))]:
+    for ch in args.channel or [nearest_channel(args.center)]:
         packets, candidates = decode_channel(x, args.center, ch, args.stf_threshold)
         print(f'channel {ch}: {candidates} STF candidates; {len(packets)} valid L-SIG headers')
         for p in packets:

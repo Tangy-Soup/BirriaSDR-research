@@ -27,8 +27,18 @@ SUBTYPES = {(0, 0): "assoc-req", (0, 1): "assoc-resp", (0, 4): "probe-req", (0, 
             (2, 0): "data", (2, 4): "null", (2, 8): "qos-data", (2, 12): "qos-null"}
 
 
+# 2.4 GHz channels, then the 5 GHz 20 MHz channels (5000 + 5n MHz).
+CHANNELS = (*range(1, 15), *range(32, 69, 4), *range(96, 145, 4), *range(149, 178, 4))
+
+
 def channel_mhz(ch):
-    return 2484 if ch == 14 else 2407 + 5 * ch
+    if ch not in CHANNELS:
+        raise ValueError(f'Unknown 20 MHz Wi-Fi channel {ch}')
+    return 2484 if ch == 14 else 2407 + 5 * ch if ch < 14 else 5000 + 5 * ch
+
+
+def nearest_channel(center):
+    return min(CHANNELS, key=lambda ch: abs(channel_mhz(ch) - center))
 
 
 def bits_to_int(bits):
@@ -559,16 +569,19 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("capture")
     ap.add_argument("--center", type=float, required=True, help="capture centre frequency in MHz")
-    ap.add_argument("--channel", type=int, nargs="+",
-                    help="Wi-Fi channel(s) to decode (default: the one at the centre)")
+    ap.add_argument("--channel", type=int, nargs="+", choices=range(1, 15), metavar="N",
+                    help="Wi-Fi channel(s) 1-14 to decode (default: the one at the centre)")
     ap.add_argument('--threshold-db', type=float, default=6, help='Burst power above lower-fifth floor (default: 6 dB)')
     ap.add_argument('--min-us', type=float, default=60, help='Minimum burst duration (default: 60 us)')
     ap.add_argument('--no-sync-search', action='store_true', help='Disable sensitivity fallback for comparison')
     ap.add_argument('--cck', action='store_true', help='Enable experimental CCK payload decoding')
     args = ap.parse_args()
 
+    channels = args.channel or [nearest_channel(args.center)]
+    if max(channels) > 14:
+        ap.error('802.11b DSSS exists only at 2.4 GHz; decode 5 GHz captures with wifi.py')
     x = load(args.capture)
-    for ch in args.channel or [min(range(1, 15), key=lambda n: abs(channel_mhz(n) - args.center))]:
+    for ch in channels:
         print()
         decode_channel(x, args.center, ch, args.threshold_db, args.min_us,
                        sync_search=not args.no_sync_search, cck=args.cck)

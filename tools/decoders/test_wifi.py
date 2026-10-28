@@ -600,6 +600,25 @@ class OutputTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 wifi.analyze(path, 2412, [11], phy='ofdm')
 
+    def test_5ghz_channels_decode_ofdm_only(self):
+        self.assertEqual([wifi_b.channel_mhz(c) for c in (1, 13, 14, 36, 149, 177)],
+                         [2412, 2472, 2484, 5180, 5745, 5885])
+        self.assertEqual([wifi_b.nearest_channel(f) for f in (2437, 2484, 5180, 5790)], [6, 14, 36, 157])
+        with self.assertRaises(ValueError):
+            wifi_b.channel_mhz(37)
+        wave, frame = ofdm_wave(6)
+        up = signal.resample_poly(np.r_[np.zeros(1000), wave, np.zeros(1000)], 2, 1)
+        iq = np.empty(2 * len(up), dtype='<i2')
+        iq[::2], iq[1::2] = np.round(up.real * 16000), np.round(up.imag * 16000)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'synthetic.cs16'
+            iq.tofile(path)
+            result, _ = wifi.analyze(path, 5180, [36])
+            self.assertEqual(result['valid_frames'], 1)
+            self.assertEqual([d['phy'] for d in result['diagnostics']], ['OFDM'])
+            with self.assertRaises(ValueError):
+                wifi.analyze(path, 5180, [36], phy='dsss')
+
 
 class DcBlockTests(unittest.TestCase):
     """BirriaSDR --chain both slots carry a static DC offset, about (-165, +152) LSB on slot 0."""

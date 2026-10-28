@@ -10,14 +10,14 @@ from pathlib import Path
 import subprocess
 import sys
 
-from wifi_b import channel_mhz
+from wifi_b import CHANNELS, channel_mhz
 from wifi_benchmark import reference_rows, score, iq_metrics
 
 
 def main():
     root = Path(__file__).resolve().parents[2]
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--channels', type=int, nargs='+', choices=range(1, 15), default=list(range(1, 12)))
+    ap.add_argument('--channels', type=int, nargs='+', choices=CHANNELS, metavar='N', default=list(range(1, 12)))
     ap.add_argument('--seconds', type=float, default=.5)
     ap.add_argument('--passes', type=int, default=1, help='Repeat the channel sweep and merge verified BSSIDs')
     ap.add_argument('--keep-iq', action='store_true', help='Retain successful raw recordings (160 MB/second/channel)')
@@ -40,6 +40,8 @@ def main():
         ap.error('--buffered supports at most two seconds per capture')
     if len(set(args.channels)) != len(args.channels):
         ap.error('Channels must be unique')
+    if args.phy == 'dsss' and max(args.channels) > 14:
+        ap.error('--phy dsss takes 2.4 GHz channels only; 802.11b exists only at 2.4 GHz')
     if args.gain and any(n < 0 or n > m for n, m in zip(args.gain, (3, 8, 12))):
         ap.error('Gain codes require LNA 0..3, filter 0..8, digital 0..12')
     reference = reference_rows(args.reference) if args.reference else None
