@@ -21,6 +21,7 @@ import wifi_ofdm as rx
 import wifi_b
 import wifi
 import combine
+import cs16
 import wifi_scan
 import wifi_benchmark
 import analyze_blanking
@@ -660,17 +661,39 @@ class DcBlockTests(unittest.TestCase):
             whole = wifi.load(path, dc_block=4096)
             np.testing.assert_array_equal(wifi.load(path), wifi.load(path, dc_block=0))
             self.assertEqual(len(whole), len(x))
-            self.assertTrue(np.all(whole[10000:12000] == 0))
-            self.assertEqual(np.count_nonzero(whole == 0), np.count_nonzero(x == 0))
+            self.assertTrue(np.all(whole[10000:12000 + cs16.BLANK_EDGE] == 0))
+            self.assertNotEqual(whole[12000 + cs16.BLANK_EDGE], 0)
+            self.assertEqual(np.count_nonzero(whole == 0), np.count_nonzero(x == 0) + cs16.BLANK_EDGE)
             for s in range(0, len(x), 4096):
                 live = whole[s:s + 4096][whole[s:s + 4096] != 0]
                 self.assertLess(abs(live.mean()) * 8192, .01)
-            for start, count in [(0, 5), (4095, 2), (5000, 9000), (12001, -1), (29990, 100)]:
+            for start, count in [(0, 5), (4095, 2), (5000, 9000), (12001, -1), (12288, 4), (29990, 100)]:
                 end = len(x) if count < 0 else start + count
                 np.testing.assert_array_equal(wifi.load(path, start, count, dc_block=4096), whole[start:end])
             for bad in (1, 4095, -1):
                 with self.assertRaises(ValueError):
                     wifi.analyze(path, 2412, [1], phy='ofdm', dc_block=bad)
+
+    def test_blanking_ramp_leaves_no_offset_spike(self):
+        # The receiver brings the whole raw sample, offset included, back on a
+        # ramp after a blanking run; subtracting the full offset there would
+        # leave a spike of about minus the offset.
+        rng = np.random.default_rng(21)
+        dc = -48 + 296j
+        x = 17 * (rng.normal(size=20000) + 1j * rng.normal(size=20000)) / np.sqrt(2) + dc
+        for run in (5000, 9000, 12280):  # the last edge crosses a 4096 boundary
+            x[run:run + 46] = 0
+            x[run + 46:run + 49] *= np.array([-.05, .61, .09])
+        x[15000:15003] = 0  # a short zero run is not blanking and keeps its neighbours
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.write(folder, x)
+            whole = wifi.load(path, dc_block=4096)
+            for run in (5000, 9000, 12280):
+                self.assertTrue(np.all(whole[run:run + 46 + cs16.BLANK_EDGE] == 0))
+            self.assertNotEqual(whole[15003], 0)
+            self.assertLess(np.abs(whole).max() * 8192, 6 * 17)
+            np.testing.assert_array_equal(wifi.load(path, 12280 + 46 + 1, 100, dc_block=4096),
+                                          whole[12327:12427])
 
 
 def two_chain(weak_amp, seed, rho=.5, h1=1j, delay=.5):

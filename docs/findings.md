@@ -252,7 +252,13 @@ chain 0, odd samples chain 1, twice the USB rate. Unlike the dense taps, which
 are 12-bit left-justified with almost no DC, these slots carry all 14 bits and
 a large static DC offset (about −165+152j and −49+68j LSB at channel 6). It
 changes with tuning and is stable within a capture, so it must be removed
-before comparing chains. An earlier "chain 1 decodes 1.57× chain 0" result was
+before comparing chains. The 3 samples after each blanking run don't take the
+plain correction: the receiver brings the whole raw sample back on a ramp
+(about −0.05, 0.61 and 0.09 of full value), so subtracting the full offset
+there leaves a spike of about minus the offset (~300 LSB on chain 0) in the
+first data symbol of most frames. Zeroing those samples, as `--dc-block`
+now does, took seven both-chain recordings from 1528 to 1600 frames over
+all `--combine` branches (+113, −41; chain 0 alone 1362 → 1430). An earlier "chain 1 decodes 1.57× chain 0" result was
 this DC offset and is withdrawn: with DC removed, chain 0 decoded 277 frames,
 chain 1 276, and the union 279.
 

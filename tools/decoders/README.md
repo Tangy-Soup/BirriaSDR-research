@@ -187,7 +187,12 @@ frames. The option subtracts the mean of each 65,536-sample (1.6 ms) block;
 `--dc-block N` uses N samples (at least 4096). The block grid starts at the
 file's (or slot's) first sample, so decode windows don't change the
 correction. Exact-zero (blanked) samples stay zero and are left out of the
-means. It is off by default; single-chain captures have almost no DC.
+means. So do the 3 samples after each blanking run (8 or more zeros): the
+receiver brings the raw sample, offset included, back on a ramp there, and
+subtracting the full offset would leave a spike of about minus the offset
+in the first data symbols of most frames. On seven both-chain recordings
+that spike cost 72 frames net (1528 → 1600 with it removed). It is off by
+default; single-chain captures have almost no DC.
 
 **Both-chain recordings** (`birria_rx --chain both`) interleave two receivers
 pair by pair: even I,Q pairs are chain 0 (WF0), odd pairs chain 1 (WF1), each
@@ -309,7 +314,8 @@ Additional tests cover packet ownership across decoder windows, unsupported CCK
 header reporting, and raw zero runs spanning file-analysis chunks.
 DC-block tests decode OFDM and DSSS frames under a both-chain-sized static
 offset, which the decoder misses without `--dc-block`. They also check that
-the correction is the same in every window and leaves blanked samples zero.
+the correction is the same in every window and leaves blanked samples zero,
+and that a ramped blanking edge leaves no offset spike.
 Slot tests check that `--slot K --of 2` decodes each slot exactly as its split
 copy does, and reject invalid slots and partial slot groups. Combining tests
 decode a weak DSSS frame that neither chain decodes alone, under correlated

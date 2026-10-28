@@ -4,6 +4,8 @@ from pathlib import Path
 import numpy as np
 
 FS = 40e6
+BLANK_RUN = 8    # zero runs at least this long are receiver blanking
+BLANK_EDGE = 3   # samples after a blanking run that are still ramping back
 
 
 def load(path, start=0, count=-1, dc_block=0, slot=0, of=1):
@@ -13,6 +15,11 @@ def load(path, start=0, count=-1, dc_block=0, slot=0, of=1):
     --chain both slots carry a large static DC offset). The block grid is fixed
     to the file start, so every window of a file gets the same correction.
     Exact zeros (receiver blanking) stay zero and are left out of the means.
+    The BLANK_EDGE samples after each blanking run are zeroed too: the
+    receiver brings the whole raw sample, offset included, back on a ramp
+    (about -0.05, 0.61, 0.09 of full value on the EDUP, in both slots), so
+    subtracting the full offset there would leave a spike of about minus
+    the offset (~300 LSB on chain 0) in the first data symbols of most frames.
 
     of > 1 reads slot `slot` of a recording whose I,Q pairs interleave `of`
     streams (birria_rx --chain both: of=2, slot 0 = chain 0, slot 1 = chain 1).
@@ -23,7 +30,15 @@ def load(path, start=0, count=-1, dc_block=0, slot=0, of=1):
         total = Path(path).stat().st_size // 4 // of
         end = total if count < 0 else min(total, start + count)
         first = start // dc_block * dc_block
-        x = load(path, first, max(0, min(total, -(-end // dc_block) * dc_block) - first), slot=slot, of=of)
+        # Load enough before the block to recognise a run whose edge falls inside it.
+        pad = min(first, BLANK_RUN + BLANK_EDGE)
+        x = load(path, first - pad, max(0, min(total, -(-end // dc_block) * dc_block) - first + pad),
+                 slot=slot, of=of)
+        z = np.flatnonzero(np.diff(np.r_[0, (x == 0).astype(np.int8), 0]))
+        ends = z[1::2][z[1::2] - z[::2] >= BLANK_RUN]
+        for k in range(BLANK_EDGE):
+            x[ends[ends + k < len(x)] + k] = 0
+        x = x[pad:]
         for s in range(0, len(x), dc_block):
             seg = x[s:s + dc_block]
             live = seg != 0
