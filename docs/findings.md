@@ -156,8 +156,9 @@ a 2 dBi omni, ferrites alone, distance from the PC, and switching off other
 devices in the room made no difference.
 
 **Foil shielding** (single run, 28-capture scan before and after). The adapter
-and the USB extension connector were wrapped in foil, grounded to the USB
-shells and the RP-SMA base:
+and the USB extension connector were wrapped in kitchen aluminum foil, folded
+over for strength, and finished with copper tape. The shield was grounded to
+the USB shells and the RP-SMA base:
 
 | | Floor before → after |
 | --- | --- |

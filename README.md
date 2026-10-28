@@ -16,7 +16,10 @@
 > - Python Wi-Fi and BLE decoders in [tools/decoders](tools/decoders/README.md).
 >
 > The measurements behind these, including what didn't work, are in
-> [docs/findings.md](docs/findings.md). Several of these additions overlap open
+> [docs/findings.md](docs/findings.md). The adapter's USB 3 self-noise and the
+> foil shield that removed most of it are covered under
+> [antenna placement and shielding](#antenna-placement-and-shielding).
+> Several of these additions overlap open
 > upstream pull requests that take different approaches.
 >
 > Upstream's own testing, described below, is on a COMFAST `3574:6211` dongle
@@ -118,6 +121,39 @@ For more detail, see:
 | Output format | Interleaved signed 16-bit I and Q (`cs16`). Buffers from the API are native-endian, and recorder files are little-endian |
 | Firmware | Original 1,664-byte RAM program. No vendor firmware and nothing flashed |
 | Host platforms | Linux, tested on a Raspberry Pi 5, and macOS, tested on an Apple Silicon Mac |
+
+### Antenna placement and shielding
+
+On the EDUP board, the adapter's own USB 3 link was the largest noise source at
+2.4 GHz. It couples into antenna A, the chain-0 port. Two changes helped, both
+measured in [findings §4](docs/findings.md#4-antenna-placement-usb-3-self-noise-and-shielding):
+
+- **Antenna A straight out.** Keep the stock antenna straight out from the
+  side port, with no elbow bend and no pigtail. To aim it, turn the whole
+  adapter. With the antenna bent alongside the adapter, the floor rose from
+  about −50 to −42 dBFS, and blanking events rose from 3.5 to 11 per ms.
+- **Shield the adapter.** The adapter body and the USB extension cable's
+  connector were wrapped in kitchen aluminum foil, folded over for strength,
+  and finished with copper tape. The shield is grounded to the USB connector
+  shells and to the RP-SMA hex base, and the antennas stay outside it.
+
+The same 28-capture scan was run before and after shielding. It used chain 0,
+manual gain, plain 2 s captures and no register writes:
+
+| Channel | Gain | Floor before | Floor after | Change |
+| --- | --- | --- | --- | --- |
+| 2.4 GHz ch 1 | LNA 3 | −44.3 dBFS | −48.0 dBFS | −3.7 dB |
+| 2.4 GHz ch 6 | LNA 3 | −43.7 dBFS | −49.4 dBFS | −5.7 dB |
+| 2.4 GHz ch 11 | LNA 3 | −42.6 dBFS | −49.6 dBFS | −7.0 dB |
+| 5 GHz, 25 channels from 36 to 165 | LNA 5 | −52.0 to −52.6 dBFS | the same | median +0.02 dB |
+
+At 2.4 GHz the shield removed most of the USB noise. The floor moved toward the
+−53.7 dBFS measured with the antenna port open. At 5 GHz the floor was already
+the receiver's own, so the shield had nothing to remove there. No narrowband
+spur rose more than 3 dB over the median bin on any channel. Decoded frame
+counts at 2.4 GHz follow traffic that changes from minute to minute, so they
+don't measure the shield; the floors do. These numbers come from one run, on
+one adapter, in one room.
 
 ## Proof of concept
 
