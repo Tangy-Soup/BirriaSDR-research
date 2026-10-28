@@ -142,7 +142,7 @@ int main(void)
     initialize(&model, &dev, BIRRIASDR_CHAIN_1);
     CHECK(mt_configure_chain(&dev) == 0 && dev.mt7921.chain_saved);
     successful_operations = model.operations;
-    CHECK(model.value[0] == 0x0001fbc3);
+    CHECK(model.value[0] == 0x0003fbc3);
     CHECK(model.value[1] == baseline[1]);
     CHECK(model.value[2] == 0x508c0500);
     CHECK(mt_configure_chain(&dev) == BIRRIASDR_ERROR_STATE);
@@ -160,7 +160,7 @@ int main(void)
     initialize(&model, &dev, BIRRIASDR_CHAIN_BOTH);
     CHECK(mt_configure_chain(&dev) == 0 && dev.mt7921.chain_saved);
     successful_operations = model.operations;
-    CHECK(model.value[0] == 0x0001fbc3);
+    CHECK(model.value[0] == 0x0003fbc3);
     CHECK(model.value[1] == 0x80000011);
     CHECK(model.value[2] == 0x50a3040c);
     model.value[1] ^= 0x00000100;
@@ -182,7 +182,7 @@ int main(void)
     initialize_filtered(&model, &dev, BIRRIASDR_CHAIN_1, true);
     CHECK(mt_configure_chain(&dev) == 0);
     successful_operations = model.operations;
-    CHECK(model.value[0] == 0x0001fbc3 && model.value[1] == baseline[1]);
+    CHECK(model.value[0] == 0x0003fbc3 && model.value[1] == baseline[1]);
     CHECK(model.value[2] == 0x508c0d00);
     CHECK(mt_restore_chain(&dev) == 0 && at_baseline(&model));
     test_faults(BIRRIASDR_CHAIN_1, true, successful_operations);

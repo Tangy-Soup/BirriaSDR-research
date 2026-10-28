@@ -8,13 +8,18 @@
  * The die has two receivers. Chain 0 (WF0) is physical RF SPI port 1. Chain 1
  * (WF1) is physical SPI port 0, the companion bank whose secondary synthesizer
  * already supplies chain 0's LO. The normal bring-up leaves that receiver at
- * 0x1e4 = 0x23c1. Writing 0x1fbc3 instead (bits 1, 11, 12, 14, 15 and 16 added)
- * turns WF1's receive path on into ICAP; leaving out any of bits 1, 11, 14, 15
- * or 16 leaves it RF-blind, and bit 12 improved the packet rise. Bit 17 would
- * add ~17.5 dB to signal and noise alike but stops the filtered dense taps
- * carrying packets, so it is not set. Chain 0's borrowed LO keeps working
- * because the synthesizer fields are untouched; both chains receive the tuned
- * channel, and paired captures found no measurable chain-0 cost.
+ * 0x1e4 = 0x23c1. Writing 0x3fbc3 instead (bits 1, 11, 12, 14, 15, 16 and 17
+ * added) turns WF1's receive path on into ICAP; leaving out any of bits 1, 11,
+ * 14, 15 or 16 leaves it RF-blind, and bit 12 improved the packet rise. Bit 17,
+ * which chain 0's own 0x3fb0b also carries, is required at 5 GHz: without it
+ * WF1 showed no burst at all (5180-5785 MHz, LNA 5), and with it WF1 came
+ * within 2 dB of WF0. At 2.4 GHz it removed WF1's 10-17 dB SNR deficit
+ * (its floor rose ~4 dB, signals ~18 dB). An earlier, unshielded study saw it
+ * raise signal and noise alike and break the filtered dense taps; on the
+ * shielded EDUP neither held (tap 5 and tap 13 both decode more). Chain 0's
+ * borrowed LO keeps working because the synthesizer fields are untouched; both
+ * chains receive the tuned channel, and paired captures found no measurable
+ * chain-0 cost, with or without bit 17.
  *
  * ICAP's dense tap number is stage * 4 + kind, where kind 0 is WF0 and kind 1
  * is WF1. Kind 1 outputs an envelope-like placeholder (I = Q) while WF1 is off.
@@ -67,7 +72,7 @@
 
 /* Field 0 is RF SPI port 0 (WF1's receiver); fields 1 and 2 are MMIO. */
 static const uint32_t chain_addresses[MT_CHAIN_FIELDS] = {0x1e4, 0x830ad440, 0x830ad448};
-#define MT_WF1_RECEIVE 0x0001fbc3u
+#define MT_WF1_RECEIVE 0x0003fbc3u
 #define MT_TAP_MASK 0x00000f00u
 #define MT_TAP(stage, kind) ((uint32_t)((stage) * 4u + (kind)) << 8)
 

@@ -68,6 +68,7 @@ receive-only.
 | The adapter's own USB 3 link couples into antenna A; antenna straight out plus foil shielding brings the 2.4 GHz floor down 8–12 dB | Established | §4 |
 | ICAP tap 12 is after the digital channel filter and helps at the 20 MHz profile | Established | §5 |
 | Chain 1 can be captured from the ROM-only bring-up, alone or interleaved with chain 0 | Established | §6 |
+| Chain 1 needs `0x1e4` bit 17: it is deaf at 5 GHz without it and level with chain 0 with it | Single run | §6 |
 | Two-chain whitened combining adds frames but no new networks | Established | §6 |
 | LNA codes 4 and 5 exist and help; measured gain table in dB | Established | §7 |
 | 80 MSps works over usbipd with the Mtk79ICAP 2.4 GHz BW80 recipe | Established | §8 |
@@ -226,10 +227,24 @@ include the ROM image.
 
 **Enabling chain 1** (established). Setting RF SPI 0 `0x1e4` from `0x23c1` to
 `0x1fbc3` powers chain 1's receive path. Bits 1, 11, 14, 15 and 16 are needed
-and bit 12 is optional. Bit 17 adds about 17.5 dB of gain but breaks dense
-taps 12 and 13. The kind-1 taps then carry chain 1: tap 5 unfiltered, tap 13
-filtered. Removing antenna B confirmed which chain is which. Enabling chain 1
-costs chain 0 nothing.
+and bit 12 is optional. The kind-1 taps then carry chain 1: tap 5 unfiltered,
+tap 13 filtered. Removing antenna B confirmed which chain is which. Enabling
+chain 1 costs chain 0 nothing.
+
+**Bit 17** (single run; interleaved 1 s A/B at 5785, 5240, 5180 and 2462 MHz).
+Chain 0's own receive word, `0x3fb0b` on SPI 1, carries bit 17; `0x1fbc3`
+didn't. Without it chain 1 shows no bursts at all at 5 GHz (+0.2 dB over its
+floor where chain 0 shows +31 dB), and at 2.4 GHz it runs 10–17 dB below
+chain 0. With `0x3fbc3` its median SNR is within 2 dB of chain 0's at
+5785 and 5240 MHz, and at 2462 MHz the deficit went from −14.2 to −0.2 dB:
+its floor rose 3.8 dB and its signals about 18 dB. On those 2462 MHz
+samples chain 0 alone decoded 142 frames, chain 1 alone 217, and all branches
+of `--combine` together 258. Chain 0's floor, burst rise and decode rate did
+not change. An earlier study, before the foil shielding of §4, had found that
+bit 17 raised signal and noise alike and broke the filtered dense taps, and
+left it out. On the shielded adapter neither held: `--chain 1` alone at
+2462 MHz went from 6 and 6 to 92 and 83 valid frames on tap 13, and from 33
+and 4 to 56 and 59 on tap 5 (two 0.5 s runs each). BirriaSDR now writes `0x3fbc3` for `--chain 1` and `--chain both`.
 
 **Both chains at once** (established). Mode `0x11`, node `0x0c` interleaves
 tap 12 (chain 0) and tap 13 (chain 1) at 40 MSps each: even samples are
@@ -249,7 +264,9 @@ Implemented as `birriasdr_set_chain()` / `birria_rx --chain 0|1|both`.
   original antenna placement), with a phase that changes per capture.
 - Slot 1 lags slot 0 by 0–0.9 samples, constant within a capture but
   different between captures.
-- Chain 1's SNR is usually 5–14 dB below chain 0's on the same burst.
+- Chain 1's SNR was usually 5–14 dB below chain 0's on the same burst. That
+  was without bit 17; with it the chains are about level, so the combining
+  and survey results below are due a rerun.
 - Plain MRC, which ignores the noise correlation, is worse than the better
   chain alone. Whitened combining (w = R⁻¹h) gains 0 to +1.1 dB median.
 - Per-STFT-bin combining broke short OFDM frames and used 2.7 GB of RAM;
@@ -287,7 +304,9 @@ sweeps inside one stream, 0 overruns). Relative to LNA 0 / LPF 0 / digital 0:
   over 3/8/0. From LNA 2 / LPF 0, LNA 5 / LPF 7 is 31.8 dB, which matches
   Mtk79ICAP's 32 dB 5 GHz model.
 - **Chain 1:** LNA and digital steps match chain 0 within about 1 dB; its LPF
-  steps are smaller (0 → 8 spans 11.0 dB against 15.6 dB).
+  steps are smaller (0 → 8 spans 11.0 dB against 15.6 dB). These were
+  measured before chain 1's receive word gained bit 17 (§6) and haven't been
+  remeasured.
 - **Both-chain mode** taps come before digital gain, so digital codes do
   nothing there.
 - **Released (unforced) gain:** chain 1 sits at a fixed LNA 5 / LPF 7 plus
@@ -361,8 +380,9 @@ Raspberry Pi shows similar times, so the per-transfer cost isn't usbipd.
 
 These are early and mostly single runs, made after upstream added 5 GHz.
 
-- **Chain 1 receives at 5 GHz,** about 2 dB weaker than chain 0 on the same
-  bursts.
+- **Chain 1 needs bit 17 at 5 GHz** (§6). Without it, later runs at 5180,
+  5240 and 5785 MHz found chain 1 deaf, though one early run had seen it about
+  2 dB weaker than chain 0. With bit 17 it is within 2 dB of chain 0.
 - **I/Q balance is fine.** Image rejection measured on FCS-valid beacons
   tuned ±10 MHz off-centre was about 34 dB at 5 GHz and 28–33 dB at 2.4 GHz,
   with a small DC spur in both bands. Missing I/Q calibration doesn't explain
@@ -497,7 +517,8 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 - The remaining 5 GHz sensitivity gap: the stock per-band tables and
   calibration results BirriaSDR doesn't apply, and stock two-chain combining.
 - HT frames at MCS 5–7 that still fail on SNR, and whether two-chain
-  combining recovers them.
+  combining recovers them now that chain 1 is level with chain 0.
+- Chain 1's dB gain steps with bit 17 set.
 - Two never-decoded 2.4 GHz APs that are still visible at −4 to −8 dB SNR on
   chain 0.
 - Whether the packet-detect, chain-select and gain-table results hold on the

@@ -60,7 +60,9 @@
  * (chain 0) and 0.44 dB rms (chain 1). Digital gain measured 1.0 dB per even
  * code; odd codes assume the same step. The both-chain taps come before the
  * digital stage, so there digital adds nothing and chain 0's analog values
- * apply. The overall-gain steps raise LNA first, then LPF, then digital,
+ * apply. Chain 1's stages were measured before its receive word gained bit 17
+ * (mt7921_chain.c); the table is relative, but those steps were not remeasured.
+ * The overall-gain steps raise LNA first, then LPF, then digital,
  * because SNR followed LNA, saturated in LPF and never changed with digital.
  * See docs/mt7921.md for the scope of these controls.
  */
