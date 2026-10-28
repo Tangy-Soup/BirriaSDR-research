@@ -73,13 +73,25 @@ paired symbols combined over both space-time streams). 40 MHz, LDPC, two or
 more spatial streams and extension streams are reported `ht_unsupported`
 with the HT-SIG fields. A frame with a QBPSK second symbol only is labelled
 `vht` (VHT-SIG-A) if legacy decoding fails. HT records carry
-`ofdm_format: ht`, `mcs`, `stbc`, `short_gi`, `aggregated`. An A-MPDU is
-split at its delimiters (signature 0x4E, 12-bit length; delimiter CRCs are
-not checked) and every MPDU that passes its own FCS becomes a record with
+`ofdm_format: ht`, `mcs`, `stbc`, `short_gi`, `aggregated`, `smoothing`.
+An A-MPDU is split at its delimiters (signature 0x4E, 12-bit length; delimiter
+CRCs are not checked) and every MPDU that passes its own FCS becomes a record with
 `mpdu_index` and the PPDU's `ampdu_subframes` / `ampdu_valid` counts. On a
 2026-10-27 2 s capture of 2.4 GHz channel 11 this decoded 39 HT MPDUs (141 →
 184 valid frames, no legacy frame lost); most HT PPDUs there are MCS 5–7 and
 fail on SNR (data EVM −12 to −19 dB).
+
+The HT channel estimate (`ht_channel`) is smoothed: each HT-LTF estimate is
+projected onto cyclic impulse responses of −12..+16 samples (HT cyclic shifts
+reach −600 ns; delay spread is kept to the 800 ns guard). A single-stream
+frame also averages in the two L-LTF symbols (2:1) unless their difference
+from the HT-LTF is concentrated inside that smooth space (`legacy_match` ≥
+`LEGACY_MATCH` = 4), which is what a transmitter with other cyclic shifts on
+the legacy fields produces; such a frame keeps its own estimate. The
+smoothing bit is recorded but not used: frames with it clear gained too.
+On two live 2 s channel 11 captures this took HT MPDUs from 29 to 84 and 66 to
+103 (valid frames 148 → 203 and 190 → 227, 2 HT frames lost, no legacy frame
+lost).
 
 DSSS also searches for scrambled preamble structure after Barker despreading,
 independently of the broadband power gate. This can recover weaker packets below
@@ -276,7 +288,9 @@ The tests generate waveforms rather than storing large captures. They exercise
 all eight legacy OFDM rates under noise, multipath and carrier offset; a long
 OFDM frame under a 40 ppm sampling-clock offset; a timing step mid-frame
 (needs the per-symbol retry); HT MCS 0–7 with and without STBC and short
-guard interval, A-MPDUs with a corrupted MPDU, and a bad HT-SIG CRC; long and
+guard interval, A-MPDUs with a corrupted MPDU, a bad HT-SIG CRC, and a
+two-antenna transmitter whose legacy fields use other cyclic shifts (L-LTF
+not averaged in); long and
 short DSSS preambles; both supported DSSS rates; packet detection across chunk
 boundaries; 40 MSps resampling; malformed headers; bad CRC; truncation; rejection
 of noise and tones; AP identity parsing; JSON serialization; and PCAP filtering.

@@ -396,6 +396,10 @@ metric.
 0–7, BCC, either guard interval, Alamouti STBC and A-MPDUs (single run). On a
 2 s channel-11 capture it added 39 HT MPDUs (141 → 184 valid frames) and lost
 no legacy frames. Most HT frames there were MCS 5–7 and failed on SNR.
+Smoothing the HT channel estimate over a −12..+16-sample impulse response,
+and averaging in the L-LTF when it shows the same channel, then took HT MPDUs
+from 29 to 84 and from 66 to 103 on two 2 s channel-11 captures (same
+samples, 2 HT frames lost, no legacy frames lost; single run).
 
 **Per-symbol pilot slope fitting loses weak frames** (established). Fitting a
 phase offset and slope to the four pilots on every data symbol is too noisy at

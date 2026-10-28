@@ -267,6 +267,61 @@ def split_ampdu(psdu):
     return out
 
 
+def ht_ltf(corrected, streams):
+    """Per-subcarrier channel of each space-time stream from its HT-LTFs.
+    STBC sends two HT-LTFs with stream signs (+, -) and (+, +)."""
+    y = [np.fft.fft(corrected[128 + 80 * (4 + i) + 16:][:64]) for i in range(streams)]
+    for v in y:
+        v[HT_ACTIVE % 64] /= HT_LTF_BINS[HT_ACTIVE % 64]
+    return y if streams == 1 else [(y[0] - y[1]) / 2, (y[0] + y[1]) / 2]
+
+
+# A channel estimate is projected onto cyclic impulse responses of -12..+16
+# samples: HT cyclic shifts reach -600 ns, and delay spread is kept out to the
+# 800 ns guard interval. Noise outside those 29 of 64 taps is dropped.
+TAPS = np.arange(-12, 17)
+
+
+def _projector(carriers):
+    taps = np.exp(-2j * np.pi * np.outer(carriers, TAPS) / 64)
+    return (taps @ np.linalg.pinv(taps)).astype(np.complex64)
+
+
+SMOOTH, LEGACY_SMOOTH = _projector(HT_ACTIVE), _projector(ACTIVE)
+LEGACY_MATCH = 4.0
+
+
+def legacy_match(corrected, h):
+    """The L-LTF estimate scaled to h, and the per-dimension energy of their
+    difference inside the smoothing space over that outside it. Noise and
+    transmitter error spread evenly (ratio about 1; 99% of live channel 11
+    PPDUs below 3.1); a different channel, such as other cyclic shifts on the
+    legacy fields, is smooth and lands inside (simulated: 10 or more even at
+    12 dB SNR). LEGACY_MATCH sits between the two."""
+    y = [np.fft.fft(corrected[a:a + 64])[ACTIVE % 64] / LTF_BINS[ACTIVE % 64] for a in (0, 64)]
+    hl = (y[0] + y[1]) / 2
+    scale = np.vdot(hl, h[ACTIVE % 64]) / max(np.vdot(hl, hl).real, 1e-20)
+    r = h[ACTIVE % 64] - scale * hl
+    inside = LEGACY_SMOOTH @ r
+    return scale * hl, float(np.sum(np.abs(inside) ** 2) / len(TAPS) /
+                             max(np.sum(np.abs(r - inside) ** 2) / (len(ACTIVE) - len(TAPS)), 1e-20))
+
+
+def ht_channel(corrected, streams):
+    """Channel estimate per space-time stream, smoothed by SMOOTH. One HT-LTF
+    is a noisy estimate, so a single stream also averages in the two L-LTF
+    symbols (weight 2:1) when they show the same channel; a transmitter that
+    sends the legacy fields differently fails the match and keeps its own."""
+    hs = ht_ltf(corrected, streams)
+    if streams == 1:
+        hl, ratio = legacy_match(corrected, hs[0])
+        if ratio < LEGACY_MATCH:
+            hs[0][ACTIVE % 64] = (hs[0][ACTIVE % 64] + 2 * hl) / 3
+    for h in hs:
+        h[HT_ACTIVE % 64] = SMOOTH @ h[HT_ACTIVE % 64]
+    return hs
+
+
 def fcs_ok(frame):
     return len(frame) >= 4 and zlib.crc32(frame[:-4]) == int.from_bytes(frame[-4:], 'little')
 
@@ -344,7 +399,7 @@ def decode_candidate(x, candidate, coarse):
                 mcs, length, short_gi, aggregated = field(0, 7), field(8, 24), bool(bits[31]), bool(bits[27])
                 stbc = field(28, 30)
                 result.update(ofdm_format='ht', mcs=mcs, length=length, short_gi=short_gi, aggregated=aggregated,
-                              stbc=stbc)
+                              stbc=stbc, smoothing=bool(bits[24]))
                 if mcs not in HT_MCS or bits[7] or stbc > 1 or bits[30] or field(32, 34) or not length:
                     return dict(result, status='ht_unsupported', cbw40=bool(bits[7]), ldpc=bool(bits[30]),
                                 extension_streams=field(32, 34))
@@ -355,16 +410,13 @@ def decode_candidate(x, candidate, coarse):
                 nsym = streams * -(-(16 + 8 * length + 6) // (streams * dbps))
                 first = 128 + 80 * (4 + streams)
                 starts = [first + (64 + gi) * n + gi for n in range(nsym)]
-                htltf = [np.fft.fft(corrected[128 + 80 * (4 + i) + 16:][:64]) for i in range(streams)]
-                if len(htltf[-1]) < 64:
+                if len(corrected) < 128 + 80 * (4 + streams):
                     return dict(result, status='truncated')
-                for y in htltf:
-                    y[HT_ACTIVE % 64] /= HT_LTF_BINS[HT_ACTIVE % 64]
+                estimates = ht_channel(corrected, streams)
                 # Pilots rotate one position per symbol; polarity starts at p3.
                 polarity = POLARITY[(np.arange(nsym) + 3) % 127]
                 if stbc:
-                    # HT-LTF signs per stream are (+, -) and (+, +).
-                    h1, h2 = (htltf[0] - htltf[1]) / 2, (htltf[0] + htltf[1]) / 2
+                    h1, h2 = estimates
                     psi1, psi2 = np.array([1, 1, -1, -1]), np.array([1, -1, -1, 1])
                     refs1 = [np.roll(psi1, -(n % 4)) * polarity[n] for n in range(nsym)]
                     refs2 = [np.roll(psi2, -(n % 4)) * polarity[n] for n in range(nsym)]
@@ -373,7 +425,7 @@ def decode_candidate(x, candidate, coarse):
                     def equalizer(trend):
                         return equalize_stbc(corrected, h1, h2, starts, refs1, refs2, HT_DATA, trend)
                 else:
-                    h_ht = np.where(np.abs(htltf[0]) > 1e-12, htltf[0], 1e-12)
+                    h_ht = np.where(np.abs(estimates[0]) > 1e-12, estimates[0], 1e-12)
                     refs = [np.roll(PILOT_SIGNS, -(n % 4)) * polarity[n] for n in range(nsym)]
                     reliability = np.abs(h_ht[HT_DATA % 64]) ** 2
 

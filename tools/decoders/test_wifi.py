@@ -322,6 +322,20 @@ class HtTests(unittest.TestCase):
         packets, _ = rx.decode_channel(up, 2412, 1)
         self.assertEqual([(p['frame'], p['mpdu_index']) for p in packets], [(frame, 0), (other, 1)])
 
+    def test_legacy_fields_with_other_cyclic_shifts_are_not_averaged_in(self):
+        # Two antennas, one stream: the second antenna delays the legacy fields
+        # by 4 samples and the HT fields by 8, so the L-LTF shows a different
+        # channel from the HT-LTF. Averaging them in loses every such frame.
+        wave, frame = ht_wave(7)
+        second = np.zeros(len(wave) + 16, complex)
+        second[4:4 + 560] += wave[:560]
+        second[568:568 + len(wave) - 560] += wave[560:]
+        packets = self.decode(self.received(np.r_[wave, np.zeros(16)] + (.6 - .5j) * second))
+        self.assertEqual([(p['fcs_ok'], p['frame']) for p in packets], [(True, frame)])
+        with mock.patch.object(rx, 'LEGACY_MATCH', np.inf):
+            self.assertFalse(any(p['fcs_ok'] for p in self.decode(
+                self.received(np.r_[wave, np.zeros(16)] + (.6 - .5j) * second))))
+
     def test_bad_ht_sig_crc_is_rejected(self):
         wave, _ = ht_wave(3, corrupt_sig=True)
         statuses = [p['status'] for p in self.decode(self.received(wave))]
