@@ -83,10 +83,18 @@ int mt_configure_capture(birriasdr_dev_t *dev)
     BS_TRY(bs_write32(dev, BS_MMIO, 0x80021098, 0));
     BS_TRY(bs_write32(dev, BS_MMIO, 0x8002109c, 0xfffc));
     BS_TRY(bs_update32(dev, BS_MMIO, 0x800210b8, 0xf0000, 0x9c000000));
+    /* All supported rates use the dense packer. Verify only its format bit,
+     * leaving unrelated fields alone. This precedes optional chain selection. */
+    BS_TRY(bs_read32(dev, BS_MMIO, 0x800210b8, &value));
+    if (value & 0x20000)
+        return BIRRIASDR_ERROR_STATE;
     BS_TRY(bs_update32(dev, BS_MMIO, 0x830ad440, 0xff, 0x80000013));
     /* Dense mode, rate field [19:18] (3 = 40 MSps, 2 = 80 MSps), tap 4. */
     BS_TRY(bs_update32(dev, BS_MMIO, 0x830ad448, 0x0fffffff,
                        dev->rate == MT_RATE_80 ? 0x00880400 : 0x008c0400));
+    BS_TRY(bs_read32(dev, BS_MMIO, 0x830ad448, &value));
+    if ((value & 0xc0000) != (dev->rate == MT_RATE_80 ? 0x80000u : 0xc0000u))
+        return BIRRIASDR_ERROR_STATE;
     BS_TRY(bs_update32(dev, BS_MMIO, 0x88009004, 0, 0x0f000000));
     return bs_write32(dev, BS_MMIO, 0x80021090, 0x4f1);
 }
