@@ -81,7 +81,10 @@ Weak legacy frames (2026-10-29, aimed at 5 GHz beacons at 3–5 dB SNR):
 - **Second pass:** a 6 Mbps legacy frame that still fails FCS is re-encoded
   from its own decode. Channel and phase are re-estimated from every symbol,
   and it is decoded again, up to `SECOND_PASSES` (2) times. A pass counts
-  only if its FCS passes (`tracking: second_pass_N`).
+  only if its FCS passes (`tracking: second_pass_N`). A frame whose second or
+  third symbol looked rotated (HT or VHT signalling) skips it when its L-LTF
+  SNR is at least `SECOND_PASS_SKIP_SNR` (10 dB). That changes no decode and
+  cuts about a tenth of the 2.4 GHz runtime.
 - **Detection:** the STF threshold dropped to 0.5. Lowering it only pays off
   together with the changes above.
 

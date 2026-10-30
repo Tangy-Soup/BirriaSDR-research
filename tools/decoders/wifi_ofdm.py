@@ -41,6 +41,11 @@ PUNCTURE = {'1/2': [1, 1], '2/3': [1, 1, 1, 0], '3/4': [1, 1, 1, 0, 0, 1],
 CPE_SMOOTH = 4
 # Re-estimation passes for a 6 Mbps legacy frame that fails FCS (reestimate).
 SECOND_PASSES = 2
+# A frame whose second or third symbol looked rotated (HT/VHT signalling)
+# skips them when its L-LTF SNR is at least this: at that SNR the rotation is
+# real and a legacy re-decode cannot succeed. Weaker frames, where noise can
+# rotate a legacy symbol, still get them.
+SECOND_PASS_SKIP_SNR = 10.0
 
 # HT-mixed (802.11n) 20 MHz, one spatial stream: 56 active subcarriers.
 HT_ACTIVE = np.r_[np.arange(-28, 0), np.arange(1, 29)]
@@ -429,7 +434,8 @@ def decode_candidate(x, candidate, coarse):
     # At most 4095-byte legacy PSDU at 6 Mbps, plus preamble.
     end = min(len(x), ltf + 128 + 80 + 80 * 1367)
     corrected = x[ltf:end] * np.exp(-1j * omega * np.arange(end - ltf))
-    h = (np.fft.fft(corrected[:64]) + np.fft.fft(corrected[64:128])) / 2
+    ltf_a, ltf_b = np.fft.fft(corrected[:64]), np.fft.fft(corrected[64:128])
+    h = (ltf_a + ltf_b) / 2
     h[ACTIVE % 64] /= LTF_BINS[ACTIVE % 64]
     # The legacy estimate is smoothed like the HT one (-12..+16 taps): at
     # 3-5 dB SNR the raw two-symbol estimate, and the |h|^2 LLR weights taken
@@ -570,7 +576,13 @@ def decode_candidate(x, candidate, coarse):
         retry = payload(equalizer(trend=False))
         if retry.get('ampdu_valid', int(retry['fcs_ok'])) > packet.get('ampdu_valid', int(packet['fcs_ok'])):
             packet = dict(retry, tracking='per_symbol')
-    if not packet['fcs_ok'] and 'ofdm_format' not in result and rate_code == 11:
+    def ltf_snr_db():
+        k = ACTIVE % 64
+        noise = np.abs(ltf_a[k] - ltf_b[k]) ** 2 / 2
+        sig = np.sum(np.abs((ltf_a[k] + ltf_b[k]) / 2) ** 2 - noise / 2)
+        return float(10 * np.log10(max(sig, 1e-20) / max(np.sum(noise), 1e-20)))
+    if (not packet['fcs_ok'] and 'ofdm_format' not in result and rate_code == 11
+            and not (unclear and ltf_snr_db() >= SECOND_PASS_SKIP_SNR)):
         # 6 Mbps legacy (beacons and most weak frames): re-estimate from the
         # first decode's own symbols, again from each new decode, and keep a
         # pass only if its FCS passes. Decisions start from the trend pass.
