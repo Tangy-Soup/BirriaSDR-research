@@ -424,8 +424,11 @@ int main(int argc, char **argv)
         result = iq ? birriasdr_read_sync(dev, iq, total, &received)
                     : BIRRIASDR_ERROR_NO_MEMORY;
         if (!result && received != total) result = BIRRIASDR_ERROR_PROTOCOL;
-        if (!result && interrupted) {
+        /* A cancelled finite read stops short, which read_sync reports as
+         * PROTOCOL. After a signal that is the expected end, not bad data. */
+        if (interrupted && (!result || result == BIRRIASDR_ERROR_PROTOCOL)) {
             fprintf(stderr, "Interrupted; buffered recording discarded\n");
+            result = 0;
             recorder.error = 1;
         }
         recorder.skip = 0;

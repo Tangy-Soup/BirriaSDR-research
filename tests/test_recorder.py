@@ -35,7 +35,11 @@ def run(case,sig=None,options=(),count=None):
     if case=='before-read':assert 'CANCEL_STATE' in ev and 'CANCEL_OK' in ev,ev
     expected=1 if case=='watch-fail' or (sig and '--buffered' in options) else 0
     assert rc==expected,(name,rc,expected)
-    if sig and '--buffered' in options:assert out.stat().st_size==0
+    if sig and '--buffered' in options:
+        assert out.stat().st_size==0
+        # A cancelled finite read is an interruption, not stale stream data.
+        text=(root/(name+'.log')).read_text()
+        assert 'Interrupted; buffered recording discarded' in text and 'stream=success' in text,(name,text)
     if count and not sig:
         assert out.stat().st_size==count*4
         # Independent expected byte pattern; --discard=2048 skips one whole block.
