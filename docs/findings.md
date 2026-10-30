@@ -60,6 +60,20 @@ and restored before the normal reset. Over about 800 screening captures one
 restore failed, during a deliberately broad overlay (§12). All of it is
 receive-only.
 
+**Tuning range of this unit** (established). The 2.4 GHz synthesizer
+calibrates from 2171 to 2652 MHz. 2170 and 2655 MHz fail on the calibration
+rail in repeated runs, and above about 2645 MHz the calibration result drifts
+between runs. The library's command range is unchanged: 2156 MHz (2190 on
+generic IDs) to 2610 MHz. The high VCO range (the 5 GHz setting) also
+calibrates on the 2.4 GHz path, from 2600 to at least 3000 MHz, but doesn't
+receive. At 2597 MHz both ranges calibrate. There, a nearby n41 cell's sync
+block was found on the low range in runs before and after. On the high range
+it was found under none of the 16 `0xc00[5:2]` LO-path values with either
+front end (32 runs). The only activity on the high range was wideband noise
+bursts timed to Wi-Fi beacons. These overrides came from a research build,
+and bring-up rewrites both fields on every open. See
+[mt7921.md](mt7921.md#5-ghz).
+
 ## 2. Summary
 
 | Finding | Status | Section |
@@ -73,6 +87,7 @@ receive-only.
 | LNA codes 4 and 5 exist and help; measured gain table in dB | Established | §7 |
 | 80 MSps works over usbipd with the Mtk79ICAP 2.4 GHz BW80 recipe | Established | §8 |
 | Host USB queue depth, not USB aggregation, sets the gap rate | Established | §8 |
+| The 2.4 GHz synthesizer calibrates from 2171 to 2652 MHz on this unit. The high VCO range calibrates beyond that but receives nothing under any LO-path value | Established | §1, §12 |
 | Most OFDM `bad_service` failures are 802.11n HT-mixed frames, not blanking | Established | §10 |
 | Per-symbol pilot slope fitting loses weak OFDM frames | Established | §10 |
 | At 5 GHz the capture floor sits after every analog gain stage, and filter-stage codes 9 to 15 add up to 13 dB on either chain (LPF 14: +7 dB SNR on chain 0, +8 dB on chain 1) | Established | §7, §9 |
@@ -599,6 +614,8 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 | Decision-directed common phase on top of smoothed pilot phase | No further gain |
 | Coarse CFO re-estimated from the STF before the found L-LTF | No change at any STF threshold |
 | Moving the OFDM FFT window into the cyclic prefix | Flat within 0.1 dB |
+| The high VCO range on the 2.4 GHz front end, which calibrates to 3000 MHz | No reception. An n41 sync block at 2597 MHz was found on the low range and not on the high range (2 of 2 pairs) (§1) |
+| All 16 `0xc00[5:2]` LO-path values with either front end, high VCO range | None received the n41 sync block. Values with `[5:4]` = 3 only give the 5/6-VCO 5 GHz LO (§1) |
 
 ## 13. Open questions
 
@@ -616,6 +633,7 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 - Whether the packet-detect, chain-select and gain-table results hold on the
   COMFAST board and on other EDUP units.
 - A writer thread for gap-free 80 MSps recording to disk.
+- Whether VCO trim fields can push the 2.4 GHz edge above 2652 MHz.
 
 ## 14. Credits
 
