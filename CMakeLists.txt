@@ -166,6 +166,12 @@ if(BUILD_TESTING)
 endif()
 
 if(BIRRIASDR_SOAPY)
+    if(BUILD_TESTING)
+        add_library(test_soapy_gain_controls OBJECT tests/test_soapy_gain_backend.c src/device.c src/chips/mt7921_gain.c)
+        target_compile_features(test_soapy_gain_controls PRIVATE c_std_11)
+        target_compile_definitions(test_soapy_gain_controls PRIVATE _POSIX_C_SOURCE=200809L)
+        target_include_directories(test_soapy_gain_controls PRIVATE include src ${LIBUSB_INCLUDE_DIR})
+    endif()
     add_subdirectory(soapy)
 endif()
 

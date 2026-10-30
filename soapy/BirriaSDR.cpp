@@ -587,11 +587,13 @@ public:
             return;
         if (pending_tenths_db_) {
             if (report(retry_busy([&] { return birriasdr_set_tuner_gain(dev_, *pending_tenths_db_); }), "gain"))
-                refresh_gain_codes();
-            pending_tenths_db_.reset();
+                pending_tenths_db_.reset();
         } else {
             report(retry_busy([&] { return birriasdr_set_gain_codes(dev_, &gain_); }), "gain codes");
         }
+        /* The mode transaction committed even if the staged gain failed. Use
+         * the library's committed tuple for subsequent manual element edits. */
+        refresh_gain_codes();
     }
 
     bool getGainMode(const int, const size_t) const override { return !manual_; }
@@ -627,8 +629,10 @@ public:
             pending_tenths_db_ = tenths;
             return;
         }
-        if (report(retry_busy([&] { return birriasdr_set_tuner_gain(dev_, tenths); }), "gain"))
+        if (report(retry_busy([&] { return birriasdr_set_tuner_gain(dev_, tenths); }), "gain")) {
             refresh_gain_codes();
+            pending_tenths_db_.reset();
+        }
     }
 
     double getGain(const int direction, const size_t channel) const override
@@ -636,7 +640,7 @@ public:
         if (!(caps_ & BIRRIASDR_CAP_GAIN_DB))
             return SoapySDR::Device::getGain(direction, channel);
         std::lock_guard<std::mutex> lock(gain_mutex_);
-        if (pending_tenths_db_)
+        if (!manual_ && pending_tenths_db_)
             return *pending_tenths_db_ / 10.0;
         int tenths = 0;
         return birriasdr_get_tuner_gain(dev_, &tenths) == 0 ? tenths / 10.0 : 0.0;
@@ -651,6 +655,8 @@ public:
             return;
         }
         std::lock_guard<std::mutex> lock(gain_mutex_);
+        if (manual_)
+            refresh_gain_codes();
         birriasdr_gain gain = gain_;
         gain.*known->code = (uint8_t)std::clamp(std::lround(value), 0L, (long)element_maximum(*known));
         if (manual_ && !report(retry_busy([&] { return birriasdr_set_gain_codes(dev_, &gain); }), "gain codes"))
@@ -672,7 +678,11 @@ public:
     double getGain(const int, const size_t, const std::string &name) const override
     {
         std::lock_guard<std::mutex> lock(gain_mutex_);
-        return gain_.*gain_element(name).code;
+        birriasdr_gain gain = gain_;
+        int manual = 0;
+        if (manual_)
+            report(birriasdr_get_gain_codes(dev_, &gain, &manual), "get gain codes");
+        return gain.*gain_element(name).code;
     }
 
     /* Settings */
