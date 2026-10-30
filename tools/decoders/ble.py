@@ -13,6 +13,7 @@ from cs16 import FS, blanking_mask, load, shift
 ADV_FREQ = {37: 2402e6, 38: 2426e6, 39: 2480e6}
 AA = 0x8E89BED6
 SPS = 4  # samples per symbol after decimation to 4 MSps
+MAX_PDU_BITS = 8 * (2 + 37 + 3)  # legacy advertising: header + 37-byte payload + CRC
 
 PDU_TYPES = {0: "ADV_IND", 1: "ADV_DIRECT_IND", 2: "ADV_NONCONN_IND", 3: "SCAN_REQ",
              4: "SCAN_RSP", 5: "CONNECT_IND", 6: "ADV_SCAN_IND", 7: "ADV_EXT_IND"}
@@ -94,11 +95,11 @@ def decode_channel(x, zero, center, chan):
     kern = (np.repeat(2 * aa_bits - 1, SPS) * np.tile(np.r_[1, np.zeros(SPS - 1)], 32))[::-1].astype(np.float32)
     corr = signal.fftconvolve(np.sign(soft), kern, "full")[len(kern) - 1:]
     found, last = [], -10**9
-    w = whitening(chan, 8 * 40)
+    w = whitening(chan, MAX_PDU_BITS)
     for c in np.where(corr >= 30)[0]:
         if c - last < 32 * SPS or pwr[c:c + 32 * SPS].mean() < 8 * floor:
             continue
-        syms = soft[c::SPS][:32 + 8 * 40]
+        syms = soft[c::SPS][:32 + MAX_PDU_BITS]
         bits = (syms - np.mean(syms[:32]) > 0).astype(np.int8)
         if np.sum(bits[:32] != aa_bits) > 2:
             continue
