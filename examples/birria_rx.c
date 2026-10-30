@@ -211,7 +211,7 @@ int main(int argc, char **argv)
             if (parse_gain_code(argv[argument + 1], 5, &gain.lna) ||
                 parse_gain_code(argv[argument + 2], 15, &gain.lpf) ||
                 parse_gain_code(argv[argument + 3], 12, &gain.digital)) {
-                fprintf(stderr, "Gain codes require LNA 0..5, filter 0..8 (0..15 on chain 0 at 5 GHz), "
+                fprintf(stderr, "Gain codes require LNA 0..5, filter 0..8 (0..15 at 5 GHz), "
                                 "digital 0..12\n");
                 return 1;
             }

@@ -307,26 +307,24 @@ static void test_gain_steps(void)
         }
         CHECK(steps[5].gain.lna == 5 && !steps[5].gain.lpf && steps[13].gain.lpf == 8);
         CHECK(chain == BIRRIASDR_CHAIN_BOTH || steps[25].gain.digital == 12);
-        /* Chain 1 and both-chain capture have no 5 GHz codes above 8. */
-        CHECK(chain == BIRRIASDR_CHAIN_0 || mt_gain_steps(chain, g5, NULL, 0) == count);
     }
     CHECK(mt_gain_steps(BIRRIASDR_CHAIN_0, g24, NULL, 0) == 26);
     CHECK(mt_gain_steps(3, g24, steps, 32) == BIRRIASDR_ERROR_INVALID);
     gain.lna = 6;
     CHECK(mt_gain_tenths_db(BIRRIASDR_CHAIN_0, g24, &gain, &tenths) == BIRRIASDR_ERROR_INVALID);
 
-    /* Chain 0 at 5 GHz: ascending, each LPF code at most once, the top LPF
-     * step the code with the most measured gain, digital last.
+    /* 5 GHz, every chain: ascending, each LPF code at most once, the top LPF
+     * step the code with the most measured gain, digital last (single chain).
      */
-    {
-        int count = mt_gain_steps(BIRRIASDR_CHAIN_0, g5, steps, 64), best = -1, top_lpf = -1;
+    for (unsigned chain = BIRRIASDR_CHAIN_0; chain <= BIRRIASDR_CHAIN_BOTH; ++chain) {
+        bool both = chain == BIRRIASDR_CHAIN_BOTH;
+        int count = mt_gain_steps(chain, g5, steps, 64), best = -1, top_lpf = -1;
         bool seen[MT_GAIN_LPF_MAX_5G + 1] = {false};
-        CHECK(count > 18 && count <= 64);
+        CHECK(count == (both ? 13 : 25));
         CHECK(steps[0].tenths_db == 0 && steps[5].gain.lna == 5 && !steps[5].gain.lpf);
         for (int i = 1; i < count; ++i) {
             CHECK(steps[i].tenths_db > steps[i - 1].tenths_db);
-            CHECK(mt_gain_tenths_db(BIRRIASDR_CHAIN_0, g5, &steps[i].gain, &tenths) == 0 &&
-                  tenths == steps[i].tenths_db);
+            CHECK(mt_gain_tenths_db(chain, g5, &steps[i].gain, &tenths) == 0 && tenths == steps[i].tenths_db);
             if (i > 5 && !steps[i].gain.digital) {
                 CHECK(!seen[steps[i].gain.lpf]);
                 seen[steps[i].gain.lpf] = true;
@@ -335,21 +333,26 @@ static void test_gain_steps(void)
         }
         for (unsigned code = 0; code <= MT_GAIN_LPF_MAX_5G; ++code) {
             struct birriasdr_gain g = {5, (uint8_t)code, 0};
-            CHECK(mt_gain_tenths_db(BIRRIASDR_CHAIN_0, g5, &g, &tenths) == 0);
+            CHECK(mt_gain_tenths_db(chain, g5, &g, &tenths) == 0);
             if (best < 0 || tenths > best)
                 best = tenths;
         }
         gain = (struct birriasdr_gain){5, (uint8_t)top_lpf, 0};
         /* The top step may be any code within the 0.5 dB step of the best one. */
-        CHECK(top_lpf > 8 && mt_gain_tenths_db(BIRRIASDR_CHAIN_0, g5, &gain, &tenths) == 0 && tenths > best - 5);
-        CHECK(steps[count - 1].gain.lpf == top_lpf && steps[count - 1].gain.digital == 12);
+        CHECK(top_lpf > 8 && mt_gain_tenths_db(chain, g5, &gain, &tenths) == 0 && tenths > best - 5);
+        CHECK(steps[count - 1].gain.lpf == top_lpf && steps[count - 1].gain.digital == (both ? 0 : 12));
     }
+    /* Chain 1 has its own 5 GHz table; both-chain capture uses chain 0's. */
+    gain = (struct birriasdr_gain){5, 14, 0};
+    CHECK(mt_gain_tenths_db(BIRRIASDR_CHAIN_1, g5, &gain, &tenths) == 0 && tenths == 261 + 174);
+    CHECK(mt_gain_tenths_db(BIRRIASDR_CHAIN_BOTH, g5, &gain, &tenths) == 0 && tenths == 311 + 162);
+    CHECK(mt_gain_tenths_db(BIRRIASDR_CHAIN_0, g5, &gain, &tenths) == 0 && tenths == 311 + 162);
 
-    /* Validation: LPF 9..15 only for chain 0 at 5 GHz. */
+    /* Validation: LPF 9..15 only at 5 GHz, on every chain. */
     for (unsigned chain = BIRRIASDR_CHAIN_0; chain <= BIRRIASDR_CHAIN_BOTH; ++chain)
         for (unsigned band = 0; band < 2; ++band) {
             uint64_t f = band ? g5 : g24;
-            bool extended = band && chain == BIRRIASDR_CHAIN_0;
+            bool extended = band;
             CHECK(mt_gain_limits(f, chain, &maximum) == 0 && maximum.lpf == (extended ? 15 : 8));
             for (unsigned code = 8; code <= 16; ++code) {
                 struct birriasdr_gain g = {5, (uint8_t)code, 0};

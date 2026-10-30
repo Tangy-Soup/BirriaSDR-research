@@ -169,7 +169,7 @@ int birriasdr_get_tuning_band(const birriasdr_dev_t *dev, uint32_t index,
 
 /* Gain-code limits depend on band and receive chain. While idle, lower staged
  * codes above the target's limits to those limits (MT7921: LPF > 8 leaving
- * chain 0 at 5 GHz), so a stale manual setting cannot block a retune in
+ * 5 GHz), so a stale manual setting cannot block a retune in
  * released mode. During capture the staged codes are live, so validation alone
  * decides and refuses the change.
  */

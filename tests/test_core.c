@@ -294,8 +294,8 @@ static void test_gain_5g_codes(void)
     CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lna == 5 && gain.lpf > 8 && gain.digital == 12);
     gain = (struct birriasdr_gain){5, 14, 0};
     CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
-    /* LPF 14 is valid only on chain 0 at 5 GHz. While idle, leaving that band
-     * or chain lowers it to 8; a live retune that would need it is refused.
+    /* LPF 14 is valid at 5 GHz on every chain. While idle, leaving that band
+     * lowers it to 8; a live retune that would need it is refused.
      */
     CHECK(birriasdr_set_center_freq(&dev, UINT64_C(5785000000)) == 0);   /* same band */
     CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lpf == 14);
@@ -305,14 +305,16 @@ static void test_gain_5g_codes(void)
     gain.lpf = 14;
     CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
     CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_BOTH) == 0);
-    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lpf == 8);
-    CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_0) == 0);
-    gain.lpf = 14;
-    CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lpf == 14);
+    CHECK(birriasdr_get_gain_code_limits(&dev, &maximum) == 0 && maximum.lpf == 15);
+    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 0) == 13);
     /* Released mode keeps staged codes; a retune still fits them. */
     CHECK(birriasdr_set_tuner_gain_mode(&dev, 0) == 0);
     CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_1) == 0);
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && !manual && gain.lpf == 14);
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(2437000000)) == 0);
     CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && !manual && gain.lpf == 8);
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(5240000000)) == 0);
     CHECK(birriasdr_set_tuner_gain_mode(&dev, 1) == 0);
     /* During capture the staged codes are live: no silent change, INVALID. */
     CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_0) == 0);
@@ -328,10 +330,10 @@ static void test_gain_5g_codes(void)
     gain.lpf = 8;
     CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
     CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_1) == 0);
-    CHECK(birriasdr_get_gain_code_limits(&dev, &maximum) == 0 && maximum.lpf == 8);
+    CHECK(birriasdr_get_gain_code_limits(&dev, &maximum) == 0 && maximum.lpf == 15);
     gain.lpf = 9;
-    CHECK(birriasdr_set_gain_codes(&dev, &gain) == BIRRIASDR_ERROR_INVALID);
-    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 0) == 26);
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
+    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 0) == 25);
     CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_0) == 0);
     CHECK(birriasdr_set_center_freq(&dev, UINT64_C(2437000000)) == 0);
     CHECK(birriasdr_get_gain_code_limits(&dev, &maximum) == 0 && maximum.lpf == 8);

@@ -24,13 +24,15 @@
  * its bandwidth; writing a wider numeric code is not a wider RF passband.
  * LNA 6 and 7 fit the fields but measured the same as 5, so they are rejected.
  *
- * Chain 0 at 5 GHz also takes LPF 9..15 in the same 4-bit fields. There the
- * captured noise floor is fixed after every analog stage (it reads the same at
- * 0/0/0 and 5/8/0), so the extra filter-stage gain is SNR: LPF 14 measured
- * +7 dB on beacons at 5180 and 5240 against LPF 8, with no edge droop. The
- * codes are not strictly in gain order (13, 14 and 15 are equal). Round 15 saw
- * 9, 10, 12, 13 and 15 collapse chain 1 at 2.4 GHz, and neither chain 1 nor
- * 2.4 GHz has been measured above 8, so those combinations stay rejected.
+ * At 5 GHz every receive chain also takes LPF 9..15 in the same 4-bit fields.
+ * There each chain's captured noise floor is fixed after every analog stage
+ * (it reads the same at 0/0/0 and 5/8/0), so the extra filter-stage gain is
+ * SNR: LPF 14 measured +7 dB on beacons on chain 0 (5180, 5240 MHz) and +8 dB
+ * on chain 1 (5240, 5805 MHz) against LPF 8, with no edge droop, and both-chain
+ * capture at 14/14 decoded about 4 dB deeper than chain 0 alone. The codes are
+ * not strictly in gain order (13, 14 and 15 are within 0.5 dB). Round 15 saw
+ * 9, 10, 12, 13 and 15 collapse chain 1 at 2.4 GHz, and 2.4 GHz has not been
+ * measured above 8 on either chain, so 2.4 GHz stays at 0..8.
  * Strong signals clip at the top 5 GHz codes; they are a weak-signal setting.
  *
  * Only the streamed chains are forced: chain 0, chain 1, or both for
@@ -73,10 +75,11 @@
  * (mt7921_chain.c); the table is relative, but those steps were not remeasured.
  * The overall-gain steps raise LNA first, then LPF, then digital,
  * because SNR followed LNA, saturated in LPF and never changed with digital.
- * Chain 0 at 5 GHz has its own table (lna_tenths_5g, lpf_tenths_5g): there
- * LPF 0..8 span only 3.1 dB and LPF 13..15 add another 13 dB. Its LPF steps are
- * ordered by measured gain, skipping codes that add less than 0.5 dB. Chain 1
- * and both-chain capture at 5 GHz use the 2.4 GHz values unmeasured.
+ * 5 GHz has its own table per chain (lna_tenths_5g, lpf_tenths_5g): there
+ * LPF 0..8 span only 3.1 dB (chain 0) or 4.1 dB (chain 1) and LPF 13..15 add
+ * another 13 dB on both. Its LPF steps are ordered by measured gain, skipping
+ * codes that add less than 0.5 dB. Both-chain capture uses chain 0's values;
+ * above LPF 8 the two chains measured within 0.5 dB of each other.
  * See docs/mt7921.md for the scope of these controls.
  */
 #include "mt7921.h"
@@ -95,24 +98,31 @@ static const int16_t lpf_tenths[2][MT_GAIN_LPF_MAX + 1] = {
     {0, 21, 40, 59, 80, 97, 117, 139, 156},
     {0, 17, 33, 49, 64, 76, 89, 96, 110},
 };
-/* Chain 0 at 5 GHz, from live sweeps on 2026-10-28 (beacon level against
- * reference dwells, as at 2437 MHz). LPF 9..15 over LPF 8: 5240 MHz at LNA 5,
- * three runs within 0.4 dB, matched within 0.9 dB at 5785 MHz. LPF 0..8 and
- * LNA 4..5 over LNA 3: 5785 MHz. LPF 0..6 are flat at 5 GHz (codes 4 and 6 from
- * a separate LNA 5 A/B). LNA 0..3 were too weak to measure there and keep the
- * 2.4 GHz steps.
+/* 5 GHz, from live sweeps (beacon level against reference dwells, as at
+ * 2437 MHz), per receive chain.
+ * Chain 0, 2026-10-28: LPF 9..15 over LPF 8 at 5240 MHz, LNA 5, three runs
+ * within 0.4 dB, matched within 0.9 dB at 5785 MHz. LPF 0..8 and LNA 4..5 over
+ * LNA 3: 5785 MHz. LPF 0..6 are flat (codes 4 and 6 from a separate LNA 5 A/B).
+ * LNA 0..3 were too weak to measure there and keep the 2.4 GHz steps.
+ * Chain 1, 2026-10-30, all at 5745 MHz against 5/8/0: LPF 9..15 at LNA 5 in
+ * three runs within 0.5 dB (matched within 1.1 dB at 5240 MHz on fewer
+ * frames), LPF 0..7 and LNA 0..4 in two runs. LNA 0 rests on one frame.
  */
-static const int16_t lna_tenths_5g[MT_GAIN_LNA_MAX + 1] = {0, 81, 138, 197, 253, 311};
-static const int16_t lpf_tenths_5g[MT_GAIN_LPF_MAX_5G + 1] = {
-    0, 0, 0, 0, 0, 3, 0, 18, 31, 46, 65, 88, 105, 161, 162, 161,
+static const int16_t lna_tenths_5g[2][MT_GAIN_LNA_MAX + 1] = {
+    {0, 81, 138, 197, 253, 311},
+    {0, 70, 120, 143, 204, 261},
+};
+static const int16_t lpf_tenths_5g[2][MT_GAIN_LPF_MAX_5G + 1] = {
+    {0, 0, 0, 0, 0, 3, 0, 18, 31, 46, 65, 88, 105, 161, 162, 161},
+    {0, 1, 1, 2, 0, 0, 1, 20, 41, 61, 79, 98, 117, 172, 174, 170},
 };
 #define MT_DIGITAL_TENTHS 10
 /* Smallest LPF increment published as its own overall-gain step. */
 #define MT_STEP_MIN_TENTHS 5
 
-static bool extended_lpf(uint64_t frequency, unsigned chain)
+static bool extended_lpf(uint64_t frequency)
 {
-    return frequency >= MT_RF_5G_MIN_HZ && chain == BIRRIASDR_CHAIN_0;
+    return frequency >= MT_RF_5G_MIN_HZ;
 }
 
 /* Largest validated code of each stage for this band and receive chain. */
@@ -121,7 +131,7 @@ int mt_gain_limits(uint64_t frequency, unsigned chain, struct birriasdr_gain *ma
     if (!maximum || chain > BIRRIASDR_CHAIN_BOTH)
         return BIRRIASDR_ERROR_INVALID;
     maximum->lna = MT_GAIN_LNA_MAX;
-    maximum->lpf = extended_lpf(frequency, chain) ? MT_GAIN_LPF_MAX_5G : MT_GAIN_LPF_MAX;
+    maximum->lpf = extended_lpf(frequency) ? MT_GAIN_LPF_MAX_5G : MT_GAIN_LPF_MAX;
     maximum->digital = MT_GAIN_DIGITAL_MAX;
     return 0;
 }
@@ -313,8 +323,8 @@ int mt_gain_tenths_db(unsigned chain, uint64_t frequency, const struct birriasdr
     if (!tenths_db)
         return BIRRIASDR_ERROR_INVALID;
     BS_TRY(mt_validate_gain(frequency, chain, gain));
-    if (extended_lpf(frequency, chain))
-        *tenths_db = lna_tenths_5g[gain->lna] + lpf_tenths_5g[gain->lpf];
+    if (extended_lpf(frequency))
+        *tenths_db = lna_tenths_5g[column][gain->lna] + lpf_tenths_5g[column][gain->lpf];
     else
         *tenths_db = lna_tenths[column][gain->lna] + lpf_tenths[column][gain->lpf];
     if (chain != BIRRIASDR_CHAIN_BOTH)

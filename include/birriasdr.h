@@ -82,8 +82,8 @@ struct birriasdr_device_info {
 /** Raw hardware indices, deliberately distinct from calibrated gain in dB. */
 struct birriasdr_gain {
     uint8_t lna;       /**< MT7972 range 0..5 (6 and 7 measured the same as 5); 5 GHz needs 4..5. */
-    uint8_t lpf;       /**< Filter-stage gain 0..8 (0..15 for chain 0 at 5 GHz, not in gain order
-                            above 8); does not select bandwidth. See get_gain_code_limits. */
+    uint8_t lpf;       /**< Filter-stage gain 0..8 (0..15 at 5 GHz, not in gain order above 8);
+                            does not select bandwidth. See get_gain_code_limits. */
     uint8_t digital;   /**< Digital gain code 0..12. */
 };
 
@@ -264,15 +264,15 @@ int birriasdr_set_tuner_gain_mode(birriasdr_dev_t *dev, int manual);
  * Codes are checked against the staged band and receive chain
  * (get_gain_code_limits); INVALID if any stage exceeds them. While idle, a
  * later frequency or receive-chain change lowers staged codes above the new
- * limits to those limits (MT7921: LPF > 8 leaving chain 0 at 5 GHz becomes 8);
+ * limits to those limits (MT7921: LPF > 8 leaving 5 GHz becomes 8);
  * during capture such a retune is refused with INVALID instead.
  */
 int birriasdr_set_gain_codes(birriasdr_dev_t *dev, const struct birriasdr_gain *gain);
 
 /** Report the largest valid code of each stage for the staged center
  * frequency's band and the staged receive chain. Limits differ by band and
- * chain (MT7921: LPF 0..15 for chain 0 at 5 GHz, otherwise 0..8). No register
- * access; UNSUPPORTED without CAP_RAW_GAIN.
+ * may differ by chain (MT7921: LPF 0..15 at 5 GHz on every chain, otherwise
+ * 0..8). No register access; UNSUPPORTED without CAP_RAW_GAIN.
  */
 int birriasdr_get_gain_code_limits(birriasdr_dev_t *dev, struct birriasdr_gain *maximum);
 
@@ -288,8 +288,9 @@ int birriasdr_get_gain_codes(birriasdr_dev_t *dev, struct birriasdr_gain *gain,
  * otherwise), and the same idle/live semantics apply.
  * The scale is relative, in dB above the lowest code, not an absolute RF gain.
  * The MT7921 table was measured at 2437 MHz and 40 MSps, per receive chain,
- * and for chain 0 at 5 GHz separately at 5240 MHz; other frequencies, chain 1
- * and both-chain capture at 5 GHz, and 80 MSps use those values unmeasured.
+ * and at 5 GHz separately per chain (chain 0 at 5240/5785 MHz, chain 1 at
+ * 5745 MHz); both-chain capture uses chain 0's values, and other frequencies
+ * and 80 MSps use those values unmeasured.
  */
 int birriasdr_set_tuner_gain(birriasdr_dev_t *dev, int tenths_db);
 
@@ -297,8 +298,8 @@ int birriasdr_set_tuner_gain(birriasdr_dev_t *dev, int tenths_db);
  * ascending, in tenths of a dB. Fills at most `capacity` entries and returns
  * the total count; pass gains=NULL and capacity=0 to query it. UNSUPPORTED
  * without CAP_GAIN_DB. The table changes with set_receive_chain and when the
- * center frequency moves to another band (MT7921 chain 0 at 5 GHz reaches
- * higher, where strong signals can clip). Safe during a read.
+ * center frequency moves to another band (MT7921 at 5 GHz reaches higher,
+ * where strong signals can clip). Safe during a read.
  */
 int birriasdr_get_tuner_gains(birriasdr_dev_t *dev, int *gains, size_t capacity);
 

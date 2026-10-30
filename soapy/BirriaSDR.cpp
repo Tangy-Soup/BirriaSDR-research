@@ -37,7 +37,7 @@ constexpr size_t DEFAULT_BUFFERS = 64;
 constexpr unsigned DEFAULT_MAX_RESTARTS = 16;
 
 /* maximum is the fallback; element_maximum() asks the library, whose limits
- * depend on band and receive chain (LPF 0..15 for chain 0 at 5 GHz). */
+ * depend on band and receive chain (MT7921: LPF 0..15 at 5 GHz). */
 struct GainElement { const char *name; unsigned maximum; uint8_t birriasdr_gain::*code; };
 const GainElement GAIN_ELEMENTS[] = {
     {"LNA", 5, &birriasdr_gain::lna},

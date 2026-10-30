@@ -47,8 +47,8 @@
  * single-chain only; it uses the BW80 filter profile (mt7921_filter.c).
  */
 /* Validated raw gain codes; LNA 6 and 7 measured the same as 5. LPF 9..15
- * fill the same 4-bit fields and are validated only for chain 0 at 5 GHz,
- * where they add filter-stage gain (not in code order); see mt7921_gain.c.
+ * fill the same 4-bit fields and are validated only at 5 GHz (any receive
+ * chain), where they add filter-stage gain (not in code order); see mt7921_gain.c.
  */
 #define MT_GAIN_LNA_MAX 5u
 #define MT_GAIN_LPF_MAX 8u
