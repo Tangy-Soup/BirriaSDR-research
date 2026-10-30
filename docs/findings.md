@@ -393,7 +393,14 @@ the fix.
 **20 MSps.** A 47-tap host halfband (flat to 8.5 MHz, −57.8 dB from 11.5 MHz)
 gave no measurable aliasing. The alternative that keeps one ICAP word in four
 (upstream PR #14) is flat to Nyquist and let a signal 12 MHz off-centre fold
-in at about −10 dB, so we kept the halfband.
+in at about −10 dB, so we kept the halfband. A repeat on 2026-10-30 added
+upstream main `8ddab14`, which since writes every rate-dependent filter field,
+pulses the rate latch and reads back the rate bits. Three rounds at a 2390 MHz
+centre, back to back with PR #14 and the halfband, used the BLE channel 37
+signal at 2402 MHz as the source. It folded into `8ddab14` at −5.9, −6.5 and
+−13.2 dB, and into PR #14 at −6.5, −5.8 and −11.1 dB. Both stayed flat to
+Nyquist, and the halfband again showed no alias. The antennas were both
+horizontal and the shield was on, unlike the first run.
 
 **Sample clock** (established). Measured against beacon TSF and each AP's
 carrier offset, the sample clock is within +0.1 ppm at 40 MSps and +0.14 ppm at

@@ -150,12 +150,12 @@ projects install their library as `libbirriasdr`. Install them in separate
 prefixes, and point `SOAPY_SDR_PLUGIN_PATH` at the module you want. Only one
 can stream from a dongle at a time.
 
-The two ways of making 20 MSps were compared once, on 25 October 2026, against
-upstream pull request #14 before upstream's later filter changes. The packed
-capture let a signal 12 MHz off-centre fold in at about −10 dB, and the
-halfband showed no alias, as
-[findings §8](docs/findings.md#8-sample-rates-and-the-transport) records. That test
-has not been repeated against `8ddab14`.
+The two ways of making 20 MSps were compared on the EDUP board, on
+30 October 2026, with upstream `8ddab14`, pull request #14 and this fork's
+halfband captured back to back. In upstream's packed capture, a signal 12 MHz
+off-centre still folded in at −6 to −13 dB, the same as pull request #14
+before upstream's later filter changes. The halfband showed no alias. See
+[findings §8](docs/findings.md#8-sample-rates-and-the-transport).
 
 ### Antenna placement and shielding
 
