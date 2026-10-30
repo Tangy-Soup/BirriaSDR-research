@@ -943,9 +943,10 @@ int main(int argc, char **argv)
             }
         } else if (!strcmp(opt, "--gain") && argument + 3 < argc) {
             if (parse_gain_code(argv[argument + 1], 5, &gain.lna) ||
-                parse_gain_code(argv[argument + 2], 8, &gain.lpf) ||
+                parse_gain_code(argv[argument + 2], 15, &gain.lpf) ||
                 parse_gain_code(argv[argument + 3], 12, &gain.digital)) {
-                fprintf(stderr, "Gain codes require LNA 0..5, filter 0..8, digital 0..12\n");
+                fprintf(stderr, "Gain codes require LNA 0..5, filter 0..8 (0..15 on chain 0 at 5 GHz), "
+                                "digital 0..12\n");
                 return 1;
             }
             explicit_gain = 1;
@@ -1090,8 +1091,15 @@ int main(int argc, char **argv)
         if (!result) result = birriasdr_set_recovery(dev, 16, on_gap, &c);
         if (!result && explicit_gain) {
             result = birriasdr_set_tuner_gain_mode(dev, 1);
-            if (!result)
+            if (!result) {
                 result = birriasdr_set_gain_codes(dev, &gain);
+                if (result == BIRRIASDR_ERROR_INVALID) {
+                    struct birriasdr_gain maximum;
+                    if (!birriasdr_get_gain_code_limits(dev, &maximum))
+                        fprintf(stderr, "Gain codes exceed this band and chain's limits: LNA 0..%u, "
+                                                "filter 0..%u, digital 0..%u\n", maximum.lna, maximum.lpf, maximum.digital);
+                }
+            }
         }
         if (result) {
             fprintf(stderr, "Setup: %s\n", birriasdr_strerror(result));

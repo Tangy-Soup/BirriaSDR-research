@@ -122,10 +122,9 @@ int mt_status(birriasdr_dev_t *dev, uint32_t words[16])
 /* Keep validated ranges in the chipset backend; adding another chipset must
  * not require teaching the public API about its register or frequency limits.
  */
-static int validate(uint64_t frequency, uint32_t rate, const struct birriasdr_gain *gain)
+static int validate(uint64_t frequency, uint32_t rate, unsigned chain, const struct birriasdr_gain *gain)
 {
-    if (gain->lna > MT_GAIN_LNA_MAX || gain->lpf > MT_GAIN_LPF_MAX || gain->digital > MT_GAIN_DIGITAL_MAX)
-        return BIRRIASDR_ERROR_INVALID;
+    BS_TRY(mt_validate_gain(frequency, chain, gain));
     /* The BW80 graft is the 2.4 GHz recipe (0x830a0080 channel field 6), so the
      * experimental 80 MSps rate is limited to that band. */
     if (!mt_frequency_supported(frequency) || (rate != MT_RATE_40 && rate != MT_RATE_80) ||
@@ -165,5 +164,6 @@ const struct bs_backend bs_mt7921_backend = {
     .prepare = mt_prepare, .start = mt_start, .stop = mt_stop,
     .status = mt_status, .reset = mt_reset, .change_gain = mt_change_gain,
     .change_frequency = mt_change_frequency,
-    .gain_steps = mt_gain_steps, .gain_tenths_db = mt_gain_tenths_db
+    .gain_steps = mt_gain_steps, .gain_tenths_db = mt_gain_tenths_db,
+    .gain_limits = mt_gain_limits
 };

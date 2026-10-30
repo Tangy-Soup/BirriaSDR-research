@@ -36,6 +36,8 @@ constexpr size_t DEFAULT_BUFFER_SAMPLES = 65536;
 constexpr size_t DEFAULT_BUFFERS = 64;
 constexpr unsigned DEFAULT_MAX_RESTARTS = 16;
 
+/* maximum is the fallback; element_maximum() asks the library, whose limits
+ * depend on band and receive chain (LPF 0..15 for chain 0 at 5 GHz). */
 struct GainElement { const char *name; unsigned maximum; uint8_t birriasdr_gain::*code; };
 const GainElement GAIN_ELEMENTS[] = {
     {"LNA", 5, &birriasdr_gain::lna},
@@ -466,7 +468,11 @@ public:
                            frequency / 1e6, list.c_str(), birriasdr_get_center_freq(dev_) / 1e6);
             return;
         }
-        report(retry_busy([&] { return birriasdr_set_center_freq(dev_, hz); }), "frequency");
+        if (report(retry_busy([&] { return birriasdr_set_center_freq(dev_, hz); }), "frequency")) {
+            /* Leaving chain 0's 5 GHz band lowers LPF codes above 8 (library). */
+            std::lock_guard<std::mutex> lock(gain_mutex_);
+            refresh_gain_codes();
+        }
     }
 
     void setFrequency(const int direction, const size_t channel, const std::string &name,
@@ -592,7 +598,7 @@ public:
 
     SoapySDR::Range getGainRange(const int, const size_t, const std::string &name) const override
     {
-        return SoapySDR::Range(0, gain_element(name).maximum, 1);
+        return SoapySDR::Range(0, element_maximum(gain_element(name)), 1);
     }
 
     SoapySDR::Range getGainRange(const int, const size_t) const override
@@ -602,7 +608,7 @@ public:
             return SoapySDR::Range(gains.front() / 10.0, gains.back() / 10.0);
         unsigned total = 0;
         for (const GainElement &element : GAIN_ELEMENTS)
-            total += element.maximum;
+            total += element_maximum(element);
         return SoapySDR::Range(0, total, 1);
     }
 
@@ -646,11 +652,21 @@ public:
         }
         std::lock_guard<std::mutex> lock(gain_mutex_);
         birriasdr_gain gain = gain_;
-        gain.*known->code = (uint8_t)std::clamp(std::lround(value), 0L, (long)known->maximum);
+        gain.*known->code = (uint8_t)std::clamp(std::lround(value), 0L, (long)element_maximum(*known));
         if (manual_ && !report(retry_busy([&] { return birriasdr_set_gain_codes(dev_, &gain); }), "gain codes"))
             return;
         gain_ = gain;
         pending_tenths_db_.reset();
+    }
+
+    /* The library's limit for the staged band and chain, so ranges follow a
+     * retune into 5 GHz; applications that cache ranges see it on re-query. */
+    unsigned element_maximum(const GainElement &element) const
+    {
+        birriasdr_gain maximum{};
+        if (birriasdr_get_gain_code_limits(dev_, &maximum) < 0)
+            return element.maximum;
+        return maximum.*element.code;
     }
 
     double getGain(const int, const size_t, const std::string &name) const override

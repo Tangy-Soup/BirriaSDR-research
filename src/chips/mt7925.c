@@ -58,10 +58,11 @@ static int status(birriasdr_dev_t *dev, uint32_t words[16])
 }
 
 /* TODO: qualify sample clocks, RF bands and gain-code ranges on the new die. */
-static int validate(uint64_t frequency, uint32_t rate, const struct birriasdr_gain *gain)
+static int validate(uint64_t frequency, uint32_t rate, unsigned chain, const struct birriasdr_gain *gain)
 {
     (void)frequency;
     (void)rate;
+    (void)chain;
     (void)gain;
     return BIRRIASDR_ERROR_UNSUPPORTED;
 }

@@ -46,9 +46,13 @@
 /* Dense ICAP rates: 0x830ad448[19:18] = 3 or 2. 80 MSps is experimental and
  * single-chain only; it uses the BW80 filter profile (mt7921_filter.c).
  */
-/* Validated raw gain codes; LNA 6 and 7 measured the same as 5. */
+/* Validated raw gain codes; LNA 6 and 7 measured the same as 5. LPF 9..15
+ * fill the same 4-bit fields and are validated only for chain 0 at 5 GHz,
+ * where they add filter-stage gain (not in code order); see mt7921_gain.c.
+ */
 #define MT_GAIN_LNA_MAX 5u
 #define MT_GAIN_LPF_MAX 8u
+#define MT_GAIN_LPF_MAX_5G 15u
 #define MT_GAIN_DIGITAL_MAX 12u
 #define MT_RATE_40 40000000u
 #define MT_RATE_80 80000000u
@@ -92,8 +96,11 @@ int mt_restore_chain(birriasdr_dev_t *dev);
 int mt_apply_gain(birriasdr_dev_t *dev);
 int mt_change_gain(birriasdr_dev_t *dev, bool manual, const struct birriasdr_gain *gain);
 int mt_restore_gain(birriasdr_dev_t *dev);
-int mt_gain_tenths_db(unsigned chain, const struct birriasdr_gain *gain, int *tenths_db);
-int mt_gain_steps(unsigned chain, struct bs_gain_step *steps, size_t capacity);
+int mt_gain_limits(uint64_t frequency, unsigned chain, struct birriasdr_gain *maximum);
+int mt_validate_gain(uint64_t frequency, unsigned chain, const struct birriasdr_gain *gain);
+int mt_gain_tenths_db(unsigned chain, uint64_t frequency, const struct birriasdr_gain *gain,
+                      int *tenths_db);
+int mt_gain_steps(unsigned chain, uint64_t frequency, struct bs_gain_step *steps, size_t capacity);
 int mt_configure_capture(birriasdr_dev_t *dev);
 int mt_reset(birriasdr_dev_t *dev);
 int mt_prepare(birriasdr_dev_t *dev, uint32_t packets);

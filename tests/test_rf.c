@@ -287,28 +287,79 @@ static void test_chain_gain(void)
 }
 
 /* The overall-gain steps are ascending for every chain selection, start at the
- * lowest code, and leave digital out of both-chain capture.
+ * lowest code, and leave digital out of both-chain capture. Chain 0 at 5 GHz
+ * extends the LPF steps past 8 in measured-gain order; other combinations keep
+ * the 2.4 GHz layout.
  */
 static void test_gain_steps(void)
 {
-    struct bs_gain_step steps[32];
-    struct birriasdr_gain gain = {0, 0, 0};
+    const uint64_t g24 = MT_RF_ANCHOR_HZ, g5 = UINT64_C(5240000000);
+    struct bs_gain_step steps[64];
+    struct birriasdr_gain gain = {0, 0, 0}, maximum;
     int tenths;
     for (unsigned chain = BIRRIASDR_CHAIN_0; chain <= BIRRIASDR_CHAIN_BOTH; ++chain) {
-        int count = mt_gain_steps(chain, steps, 32);
+        int count = mt_gain_steps(chain, g24, steps, 32);
         CHECK(count == (chain == BIRRIASDR_CHAIN_BOTH ? 14 : 26));
         CHECK(steps[0].tenths_db == 0 && !steps[0].gain.lna && !steps[0].gain.lpf);
         for (int i = 1; i < count; ++i) {
             CHECK(steps[i].tenths_db > steps[i - 1].tenths_db);
-            CHECK(mt_gain_tenths_db(chain, &steps[i].gain, &tenths) == 0 && tenths == steps[i].tenths_db);
+            CHECK(mt_gain_tenths_db(chain, g24, &steps[i].gain, &tenths) == 0 && tenths == steps[i].tenths_db);
         }
         CHECK(steps[5].gain.lna == 5 && !steps[5].gain.lpf && steps[13].gain.lpf == 8);
         CHECK(chain == BIRRIASDR_CHAIN_BOTH || steps[25].gain.digital == 12);
+        /* Chain 1 and both-chain capture have no 5 GHz codes above 8. */
+        CHECK(chain == BIRRIASDR_CHAIN_0 || mt_gain_steps(chain, g5, NULL, 0) == count);
     }
-    CHECK(mt_gain_steps(BIRRIASDR_CHAIN_0, NULL, 0) == 26);
-    CHECK(mt_gain_steps(3, steps, 32) == BIRRIASDR_ERROR_INVALID);
+    CHECK(mt_gain_steps(BIRRIASDR_CHAIN_0, g24, NULL, 0) == 26);
+    CHECK(mt_gain_steps(3, g24, steps, 32) == BIRRIASDR_ERROR_INVALID);
     gain.lna = 6;
-    CHECK(mt_gain_tenths_db(BIRRIASDR_CHAIN_0, &gain, &tenths) == BIRRIASDR_ERROR_INVALID);
+    CHECK(mt_gain_tenths_db(BIRRIASDR_CHAIN_0, g24, &gain, &tenths) == BIRRIASDR_ERROR_INVALID);
+
+    /* Chain 0 at 5 GHz: ascending, each LPF code at most once, the top LPF
+     * step the code with the most measured gain, digital last.
+     */
+    {
+        int count = mt_gain_steps(BIRRIASDR_CHAIN_0, g5, steps, 64), best = -1, top_lpf = -1;
+        bool seen[MT_GAIN_LPF_MAX_5G + 1] = {false};
+        CHECK(count > 18 && count <= 64);
+        CHECK(steps[0].tenths_db == 0 && steps[5].gain.lna == 5 && !steps[5].gain.lpf);
+        for (int i = 1; i < count; ++i) {
+            CHECK(steps[i].tenths_db > steps[i - 1].tenths_db);
+            CHECK(mt_gain_tenths_db(BIRRIASDR_CHAIN_0, g5, &steps[i].gain, &tenths) == 0 &&
+                  tenths == steps[i].tenths_db);
+            if (i > 5 && !steps[i].gain.digital) {
+                CHECK(!seen[steps[i].gain.lpf]);
+                seen[steps[i].gain.lpf] = true;
+                top_lpf = steps[i].gain.lpf;
+            }
+        }
+        for (unsigned code = 0; code <= MT_GAIN_LPF_MAX_5G; ++code) {
+            struct birriasdr_gain g = {5, (uint8_t)code, 0};
+            CHECK(mt_gain_tenths_db(BIRRIASDR_CHAIN_0, g5, &g, &tenths) == 0);
+            if (best < 0 || tenths > best)
+                best = tenths;
+        }
+        gain = (struct birriasdr_gain){5, (uint8_t)top_lpf, 0};
+        /* The top step may be any code within the 0.5 dB step of the best one. */
+        CHECK(top_lpf > 8 && mt_gain_tenths_db(BIRRIASDR_CHAIN_0, g5, &gain, &tenths) == 0 && tenths > best - 5);
+        CHECK(steps[count - 1].gain.lpf == top_lpf && steps[count - 1].gain.digital == 12);
+    }
+
+    /* Validation: LPF 9..15 only for chain 0 at 5 GHz. */
+    for (unsigned chain = BIRRIASDR_CHAIN_0; chain <= BIRRIASDR_CHAIN_BOTH; ++chain)
+        for (unsigned band = 0; band < 2; ++band) {
+            uint64_t f = band ? g5 : g24;
+            bool extended = band && chain == BIRRIASDR_CHAIN_0;
+            CHECK(mt_gain_limits(f, chain, &maximum) == 0 && maximum.lpf == (extended ? 15 : 8));
+            for (unsigned code = 8; code <= 16; ++code) {
+                struct birriasdr_gain g = {5, (uint8_t)code, 0};
+                int expect = code <= 8 || (extended && code <= 15) ? 0 : BIRRIASDR_ERROR_INVALID;
+                CHECK(mt_validate_gain(f, chain, &g) == expect);
+                CHECK(bs_mt7921_backend.validate(f, MT_RATE_40, chain, &g) == expect);
+            }
+        }
+    CHECK(mt_gain_limits(g5, 3, &maximum) == BIRRIASDR_ERROR_INVALID);
+    CHECK(mt_validate_gain(g5, BIRRIASDR_CHAIN_0, NULL) == BIRRIASDR_ERROR_INVALID);
 }
 
 /* A parked retune must target SPI 0's secondary oscillator, leave the other

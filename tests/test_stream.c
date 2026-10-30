@@ -184,8 +184,9 @@ static int reset(birriasdr_dev_t *dev)
     return model->fault == RESET || model->fault == OVERRUN_RESET_ERROR ?
         BIRRIASDR_ERROR_IO : 0;
 }
-static int validate(uint64_t frequency, uint32_t rate, const struct birriasdr_gain *gain)
+static int validate(uint64_t frequency, uint32_t rate, unsigned chain, const struct birriasdr_gain *gain)
 {
+    (void)chain;
     (void)gain;
     return frequency && rate ? 0 : BIRRIASDR_ERROR_INVALID;
 }

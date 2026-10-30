@@ -167,6 +167,25 @@ int birriasdr_get_tuning_band(const birriasdr_dev_t *dev, uint32_t index,
     return *minimum && *maximum >= *minimum ? 0 : BIRRIASDR_ERROR_UNSUPPORTED;
 }
 
+/* Gain-code limits depend on band and receive chain. While idle, lower staged
+ * codes above the target's limits to those limits (MT7921: LPF > 8 leaving
+ * chain 0 at 5 GHz), so a stale manual setting cannot block a retune in
+ * released mode. During capture the staged codes are live, so validation alone
+ * decides and refuses the change.
+ */
+static struct birriasdr_gain fitted_gain(birriasdr_dev_t *dev, unsigned state, uint64_t frequency,
+                                        unsigned chain)
+{
+    struct birriasdr_gain gain = dev->gain, maximum;
+    if (state == BS_IDLE && dev->backend->gain_limits &&
+        dev->backend->gain_limits(frequency, chain, &maximum) == 0) {
+        if (gain.lna > maximum.lna) gain.lna = maximum.lna;
+        if (gain.lpf > maximum.lpf) gain.lpf = maximum.lpf;
+        if (gain.digital > maximum.digital) gain.digital = maximum.digital;
+    }
+    return gain;
+}
+
 /* Stage a center while idle, or synchronously retune under the same mutex as
  * gain/start/stop/reset. The backend calibrates its synthesizer; it never rounds
  * to a Wi-Fi channel or silently translates this into host-side mixing.
@@ -175,6 +194,7 @@ int birriasdr_set_center_freq(birriasdr_dev_t *dev, uint64_t frequency)
 {
     unsigned state;
     int result = 0;
+    struct birriasdr_gain gain;
     if (!dev)
         return BIRRIASDR_ERROR_INVALID;
     pthread_mutex_lock(&dev->control_mutex);
@@ -183,7 +203,8 @@ int birriasdr_set_center_freq(birriasdr_dev_t *dev, uint64_t frequency)
         result = BIRRIASDR_ERROR_BUSY;
         goto done;
     }
-    result = dev->backend->validate(frequency, dev->rate, &dev->gain);
+    gain = fitted_gain(dev, state, frequency, atomic_load(&dev->receive_chain));
+    result = dev->backend->validate(frequency, dev->rate, atomic_load(&dev->receive_chain), &gain);
     if (result < 0)
         goto done;
     if ((dev->min_frequency && frequency < dev->min_frequency) ||
@@ -204,6 +225,7 @@ int birriasdr_set_center_freq(birriasdr_dev_t *dev, uint64_t frequency)
         }
     }
     atomic_store(&dev->frequency, frequency);
+    dev->gain = gain;
 done:
     pthread_mutex_unlock(&dev->control_mutex);
     return result;
@@ -225,13 +247,14 @@ int birriasdr_set_sample_rate(birriasdr_dev_t *dev, uint32_t rate)
 {
     BS_TRY(require_idle(dev));
     if (rate && rate <= UINT32_MAX / 2 &&
-        dev->backend->validate(dev->frequency, rate, &dev->gain) == BIRRIASDR_ERROR_UNSUPPORTED &&
-        dev->backend->validate(dev->frequency, rate * 2, &dev->gain) == 0) {
+        dev->backend->validate(dev->frequency, rate, atomic_load(&dev->receive_chain), &dev->gain) ==
+            BIRRIASDR_ERROR_UNSUPPORTED &&
+        dev->backend->validate(dev->frequency, rate * 2, atomic_load(&dev->receive_chain), &dev->gain) == 0) {
         dev->rate = rate * 2;
         dev->decimation = 2;
         return 0;
     }
-    BS_TRY(dev->backend->validate(dev->frequency, rate, &dev->gain));
+    BS_TRY(dev->backend->validate(dev->frequency, rate, atomic_load(&dev->receive_chain), &dev->gain));
     dev->rate = rate;
     dev->decimation = 1;
     return 0;
@@ -259,7 +282,7 @@ static int set_gain_locked(birriasdr_dev_t *dev, bool manual,
         return BIRRIASDR_ERROR_BUSY;
     if (!(dev->backend->capabilities & BIRRIASDR_CAP_RAW_GAIN))
         return BIRRIASDR_ERROR_UNSUPPORTED;
-    BS_TRY(dev->backend->validate(dev->frequency, dev->rate, gain));
+    BS_TRY(dev->backend->validate(dev->frequency, dev->rate, atomic_load(&dev->receive_chain), gain));
     if (state == BS_RUNNING) {
         int result;
         if (!(dev->backend->capabilities & BIRRIASDR_CAP_LIVE_GAIN) ||
@@ -348,7 +371,8 @@ int birriasdr_set_tuner_gain(birriasdr_dev_t *dev, int tenths_db)
         return BIRRIASDR_ERROR_UNSUPPORTED;
     pthread_mutex_lock(&dev->control_mutex);
     /* The chain is staged under this lock, so the table matches the commit. */
-    count = dev->backend->gain_steps(atomic_load(&dev->receive_chain), steps, BS_MAX_GAIN_STEPS);
+    count = dev->backend->gain_steps(atomic_load(&dev->receive_chain), atomic_load(&dev->frequency),
+                                     steps, BS_MAX_GAIN_STEPS);
     for (int i = 1; i < count && i < BS_MAX_GAIN_STEPS; ++i)
         if (abs(steps[i].tenths_db - tenths_db) < abs(steps[best].tenths_db - tenths_db))
             best = i;
@@ -376,7 +400,8 @@ int birriasdr_get_tuner_gains(birriasdr_dev_t *dev, int *gains, size_t capacity)
         return BIRRIASDR_ERROR_INVALID;
     if (!(dev->backend->capabilities & BIRRIASDR_CAP_GAIN_DB) || !dev->backend->gain_steps)
         return BIRRIASDR_ERROR_UNSUPPORTED;
-    count = dev->backend->gain_steps(atomic_load(&dev->receive_chain), steps, BS_MAX_GAIN_STEPS);
+    count = dev->backend->gain_steps(atomic_load(&dev->receive_chain), atomic_load(&dev->frequency),
+                                     steps, BS_MAX_GAIN_STEPS);
     if (count < 0 || count > BS_MAX_GAIN_STEPS)
         return count < 0 ? count : BIRRIASDR_ERROR_STATE;
     for (int i = 0; i < count && (size_t)i < capacity; ++i)
@@ -395,7 +420,18 @@ int birriasdr_get_tuner_gain(birriasdr_dev_t *dev, int *tenths_db)
     pthread_mutex_lock(&dev->control_mutex);
     gain = dev->gain;
     pthread_mutex_unlock(&dev->control_mutex);
-    return dev->backend->gain_tenths_db(atomic_load(&dev->receive_chain), &gain, tenths_db);
+    return dev->backend->gain_tenths_db(atomic_load(&dev->receive_chain), atomic_load(&dev->frequency),
+                                        &gain, tenths_db);
+}
+
+/* Limits for the staged band and chain; no register access. */
+int birriasdr_get_gain_code_limits(birriasdr_dev_t *dev, struct birriasdr_gain *maximum)
+{
+    if (!dev || !maximum)
+        return BIRRIASDR_ERROR_INVALID;
+    if (!(dev->backend->capabilities & BIRRIASDR_CAP_RAW_GAIN) || !dev->backend->gain_limits)
+        return BIRRIASDR_ERROR_UNSUPPORTED;
+    return dev->backend->gain_limits(atomic_load(&dev->frequency), atomic_load(&dev->receive_chain), maximum);
 }
 
 /* TODO: identify every relevant AGC loop and validate a complete freeze/release. */
@@ -461,7 +497,15 @@ int birriasdr_set_receive_chain(birriasdr_dev_t *dev, int chain)
         result = BIRRIASDR_ERROR_UNSUPPORTED;
     if (!result && (chain < BIRRIASDR_CHAIN_0 || chain > BIRRIASDR_CHAIN_BOTH))
         result = BIRRIASDR_ERROR_INVALID;
-    if (!result) atomic_store(&dev->receive_chain, (unsigned)chain);
+    /* Staged codes valid on one chain may not be on another (LPF > 8). */
+    if (!result) {
+        struct birriasdr_gain gain = fitted_gain(dev, BS_IDLE, dev->frequency, (unsigned)chain);
+        result = dev->backend->validate(dev->frequency, dev->rate, (unsigned)chain, &gain);
+        if (!result) {
+            dev->gain = gain;
+            atomic_store(&dev->receive_chain, (unsigned)chain);
+        }
+    }
     pthread_mutex_unlock(&dev->control_mutex);
     return result;
 }

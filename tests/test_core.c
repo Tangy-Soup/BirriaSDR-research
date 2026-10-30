@@ -262,6 +262,84 @@ static void test_gain_db(void)
     pthread_mutex_destroy(&dev.control_mutex);
 }
 
+/* Chain 0 at 5 GHz takes LPF 9..15; every other band and chain keeps 0..8, and
+ * a retune or chain change that would strand staged codes is refused unchanged.
+ */
+static void test_gain_5g_codes(void)
+{
+    birriasdr_dev_t dev = {0};
+    struct birriasdr_gain gain, maximum;
+    int gains[64], manual, count;   /* BS_MAX_GAIN_STEPS (device.c) */
+    atomic_init(&dev.run_state, BS_IDLE);
+    CHECK(pthread_mutex_init(&dev.control_mutex, NULL) == 0);
+    dev.backend = &bs_mt7921_backend;
+    dev.frequency = UINT64_C(5240000000);
+    dev.rate = dev.backend->default_rate;
+    atomic_init(&dev.receive_chain, BIRRIASDR_CHAIN_0);
+    CHECK(birriasdr_get_gain_code_limits(NULL, &maximum) == BIRRIASDR_ERROR_INVALID);
+    CHECK(birriasdr_get_gain_code_limits(&dev, NULL) == BIRRIASDR_ERROR_INVALID);
+    CHECK(birriasdr_get_gain_code_limits(&dev, &maximum) == 0);
+    CHECK(maximum.lna == 5 && maximum.lpf == 15 && maximum.digital == 12);
+    CHECK(birriasdr_set_tuner_gain_mode(&dev, 1) == 0);
+    gain = (struct birriasdr_gain){5, 14, 0};
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
+    gain.lpf = 16;
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == BIRRIASDR_ERROR_INVALID);
+    /* The 5 GHz overall table extends past LPF 8 and stays ascending. */
+    count = birriasdr_get_tuner_gains(&dev, gains, 64);
+    CHECK(count > 18 && count <= 64 && gains[0] == 0);
+    for (int i = 1; i < count; ++i)
+        CHECK(gains[i] > gains[i - 1]);
+    CHECK(birriasdr_set_tuner_gain(&dev, 10000) == 0);
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lna == 5 && gain.lpf > 8 && gain.digital == 12);
+    gain = (struct birriasdr_gain){5, 14, 0};
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
+    /* LPF 14 is valid only on chain 0 at 5 GHz. While idle, leaving that band
+     * or chain lowers it to 8; a live retune that would need it is refused.
+     */
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(5785000000)) == 0);   /* same band */
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lpf == 14);
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(2437000000)) == 0);
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lna == 5 && gain.lpf == 8);
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(5240000000)) == 0);
+    gain.lpf = 14;
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
+    CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_BOTH) == 0);
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lpf == 8);
+    CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_0) == 0);
+    gain.lpf = 14;
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
+    /* Released mode keeps staged codes; a retune still fits them. */
+    CHECK(birriasdr_set_tuner_gain_mode(&dev, 0) == 0);
+    CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_1) == 0);
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && !manual && gain.lpf == 8);
+    CHECK(birriasdr_set_tuner_gain_mode(&dev, 1) == 0);
+    /* During capture the staged codes are live: no silent change, INVALID. */
+    CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_0) == 0);
+    gain.lpf = 14;
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
+    atomic_store(&dev.run_state, BS_RUNNING);
+    dev.control_ready = true;
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(2437000000)) == BIRRIASDR_ERROR_INVALID);
+    CHECK(dev.frequency == UINT64_C(5240000000));
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lpf == 14);
+    atomic_store(&dev.run_state, BS_IDLE);
+    dev.control_ready = false;
+    gain.lpf = 8;
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
+    CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_1) == 0);
+    CHECK(birriasdr_get_gain_code_limits(&dev, &maximum) == 0 && maximum.lpf == 8);
+    gain.lpf = 9;
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == BIRRIASDR_ERROR_INVALID);
+    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 0) == 26);
+    CHECK(birriasdr_set_receive_chain(&dev, BIRRIASDR_CHAIN_0) == 0);
+    CHECK(birriasdr_set_center_freq(&dev, UINT64_C(2437000000)) == 0);
+    CHECK(birriasdr_get_gain_code_limits(&dev, &maximum) == 0 && maximum.lpf == 8);
+    CHECK(birriasdr_set_gain_codes(&dev, &gain) == BIRRIASDR_ERROR_INVALID);
+    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 0) == 26);
+    pthread_mutex_destroy(&dev.control_mutex);
+}
+
 /* Unsupported chip/control paths must fail without USB access or pretend values. */
 static void test_api(void)
 {
@@ -427,6 +505,7 @@ int main(void)
     test_image();
     test_api();
     test_gain_db();
+    test_gain_5g_codes();
     puts("core tests passed");
     return 0;
 }

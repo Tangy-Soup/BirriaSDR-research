@@ -50,7 +50,8 @@ struct bs_backend {
     uint32_t default_rate;
     uint32_t default_bandwidth;
     int (*validate_bandwidth)(uint32_t bandwidth);
-    int (*validate)(uint64_t frequency, uint32_t rate, const struct birriasdr_gain *gain);
+    /* Gain codes are checked against the band and the staged receive chain. */
+    int (*validate)(uint64_t frequency, uint32_t rate, unsigned chain, const struct birriasdr_gain *gain);
     int (*identify)(birriasdr_dev_t *);
     int (*prepare)(birriasdr_dev_t *, uint32_t packets);
     int (*start)(birriasdr_dev_t *);
@@ -59,9 +60,12 @@ struct bs_backend {
     int (*reset)(birriasdr_dev_t *);
     int (*change_gain)(birriasdr_dev_t *, bool manual, const struct birriasdr_gain *);
     int (*change_frequency)(birriasdr_dev_t *, uint64_t frequency);
-    /* Measured relative gain per receive chain; required with CAP_GAIN_DB. */
-    int (*gain_steps)(unsigned chain, struct bs_gain_step *steps, size_t capacity);
-    int (*gain_tenths_db)(unsigned chain, const struct birriasdr_gain *gain, int *tenths_db);
+    /* Measured relative gain per receive chain and band; required with CAP_GAIN_DB. */
+    int (*gain_steps)(unsigned chain, uint64_t frequency, struct bs_gain_step *steps, size_t capacity);
+    int (*gain_tenths_db)(unsigned chain, uint64_t frequency, const struct birriasdr_gain *gain,
+                          int *tenths_db);
+    /* Largest validated code per stage for a band and chain; optional with CAP_RAW_GAIN. */
+    int (*gain_limits)(uint64_t frequency, unsigned chain, struct birriasdr_gain *maximum);
 };
 
 struct bs_usb_id {

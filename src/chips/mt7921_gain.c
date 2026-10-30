@@ -24,6 +24,15 @@
  * its bandwidth; writing a wider numeric code is not a wider RF passband.
  * LNA 6 and 7 fit the fields but measured the same as 5, so they are rejected.
  *
+ * Chain 0 at 5 GHz also takes LPF 9..15 in the same 4-bit fields. There the
+ * captured noise floor is fixed after every analog stage (it reads the same at
+ * 0/0/0 and 5/8/0), so the extra filter-stage gain is SNR: LPF 14 measured
+ * +7 dB on beacons at 5180 and 5240 against LPF 8, with no edge droop. The
+ * codes are not strictly in gain order (13, 14 and 15 are equal). Round 15 saw
+ * 9, 10, 12, 13 and 15 collapse chain 1 at 2.4 GHz, and neither chain 1 nor
+ * 2.4 GHz has been measured above 8, so those combinations stay rejected.
+ * Strong signals clip at the top 5 GHz codes; they are a weak-signal setting.
+ *
  * Only the streamed chains are forced: chain 0, chain 1, or both for
  * BIRRIASDR_CHAIN_BOTH. Mtk79ICAP found that also holding a chain the stream
  * does not carry nearly doubles blanking on the streamed one.
@@ -64,6 +73,10 @@
  * (mt7921_chain.c); the table is relative, but those steps were not remeasured.
  * The overall-gain steps raise LNA first, then LPF, then digital,
  * because SNR followed LNA, saturated in LPF and never changed with digital.
+ * Chain 0 at 5 GHz has its own table (lna_tenths_5g, lpf_tenths_5g): there
+ * LPF 0..8 span only 3.1 dB and LPF 13..15 add another 13 dB. Its LPF steps are
+ * ordered by measured gain, skipping codes that add less than 0.5 dB. Chain 1
+ * and both-chain capture at 5 GHz use the 2.4 GHz values unmeasured.
  * See docs/mt7921.md for the scope of these controls.
  */
 #include "mt7921.h"
@@ -82,7 +95,44 @@ static const int16_t lpf_tenths[2][MT_GAIN_LPF_MAX + 1] = {
     {0, 21, 40, 59, 80, 97, 117, 139, 156},
     {0, 17, 33, 49, 64, 76, 89, 96, 110},
 };
+/* Chain 0 at 5 GHz, from live sweeps on 2026-10-28 (beacon level against
+ * reference dwells, as at 2437 MHz). LPF 9..15 over LPF 8: 5240 MHz at LNA 5,
+ * three runs within 0.4 dB, matched within 0.9 dB at 5785 MHz. LPF 0..8 and
+ * LNA 4..5 over LNA 3: 5785 MHz. LPF 0..6 are flat at 5 GHz (codes 4 and 6 from
+ * a separate LNA 5 A/B). LNA 0..3 were too weak to measure there and keep the
+ * 2.4 GHz steps.
+ */
+static const int16_t lna_tenths_5g[MT_GAIN_LNA_MAX + 1] = {0, 81, 138, 197, 253, 311};
+static const int16_t lpf_tenths_5g[MT_GAIN_LPF_MAX_5G + 1] = {
+    0, 0, 0, 0, 0, 3, 0, 18, 31, 46, 65, 88, 105, 161, 162, 161,
+};
 #define MT_DIGITAL_TENTHS 10
+/* Smallest LPF increment published as its own overall-gain step. */
+#define MT_STEP_MIN_TENTHS 5
+
+static bool extended_lpf(uint64_t frequency, unsigned chain)
+{
+    return frequency >= MT_RF_5G_MIN_HZ && chain == BIRRIASDR_CHAIN_0;
+}
+
+/* Largest validated code of each stage for this band and receive chain. */
+int mt_gain_limits(uint64_t frequency, unsigned chain, struct birriasdr_gain *maximum)
+{
+    if (!maximum || chain > BIRRIASDR_CHAIN_BOTH)
+        return BIRRIASDR_ERROR_INVALID;
+    maximum->lna = MT_GAIN_LNA_MAX;
+    maximum->lpf = extended_lpf(frequency, chain) ? MT_GAIN_LPF_MAX_5G : MT_GAIN_LPF_MAX;
+    maximum->digital = MT_GAIN_DIGITAL_MAX;
+    return 0;
+}
+
+int mt_validate_gain(uint64_t frequency, unsigned chain, const struct birriasdr_gain *gain)
+{
+    struct birriasdr_gain maximum;
+    BS_TRY(mt_gain_limits(frequency, chain, &maximum));
+    return !gain || gain->lna > maximum.lna || gain->lpf > maximum.lpf || gain->digital > maximum.digital ?
+        BIRRIASDR_ERROR_INVALID : 0;
+}
 
 /* Bit c is set when receive chain c is streamed. */
 static unsigned streamed_chains(birriasdr_dev_t *dev)
@@ -155,12 +205,13 @@ static int gain_transaction(birriasdr_dev_t *dev, unsigned chain, const uint32_t
     return result;
 }
 
-/* Build raw forced indices; the same words serve either chain. */
-static int gain_values(const struct birriasdr_gain *gain, uint32_t values[4])
+/* Build raw forced indices; the same words serve either chain. Codes are
+ * checked against the staged band and chain, not just the field widths.
+ */
+static int gain_values(birriasdr_dev_t *dev, const struct birriasdr_gain *gain, uint32_t values[4])
 {
     uint32_t lna = gain->lna, lpf = gain->lpf, digital = gain->digital;
-    if (lna > 5 || lpf > 8 || digital > 12)
-        return BIRRIASDR_ERROR_INVALID;
+    BS_TRY(mt_validate_gain(atomic_load(&dev->frequency), atomic_load(&dev->receive_chain), gain));
     values[0] = 7 | lna << 8 | lpf << 12 | lna << 16 | lpf << 20 | lna << 24 | lpf << 28;
     values[1] = digital << 24 | digital << 16;
     values[2] = 0x80000000u | lna << 20;
@@ -176,7 +227,7 @@ int mt_apply_gain(birriasdr_dev_t *dev)
 {
     uint32_t before[2][4] = {{0}}, coarse, values[4];
     unsigned chains = streamed_chains(dev);
-    BS_TRY(gain_values(&dev->gain, values));
+    BS_TRY(gain_values(dev, &dev->gain, values));
     for (unsigned c = 0; c < 2; ++c) {
         if (!(chains & 1u << c))
             continue;
@@ -211,7 +262,7 @@ int mt_change_gain(birriasdr_dev_t *dev, bool manual, const struct birriasdr_gai
     uint32_t before[4], values[4];
     if (!gain)
         return BIRRIASDR_ERROR_INVALID;
-    BS_TRY(gain_values(gain, values));
+    BS_TRY(gain_values(dev, gain, values));
     if (!dev->mt7921.gain_saved)
         return BIRRIASDR_ERROR_STATE;
     for (unsigned c = 0; c < 2; ++c) {
@@ -251,41 +302,79 @@ int mt_restore_gain(birriasdr_dev_t *dev)
     return first_error;
 }
 
-/* Relative gain of arbitrary codes from the separable stage table. In
- * both-chain capture the digital stage is bypassed and chain 0's values apply.
+/* Relative gain of arbitrary codes from the separable stage table for this
+ * band and receive chain. In both-chain capture the digital stage is bypassed
+ * and chain 0's values apply.
  */
-int mt_gain_tenths_db(unsigned chain, const struct birriasdr_gain *gain, int *tenths_db)
+int mt_gain_tenths_db(unsigned chain, uint64_t frequency, const struct birriasdr_gain *gain,
+                      int *tenths_db)
 {
     unsigned column = chain == BIRRIASDR_CHAIN_1 ? 1 : 0;
-    if (!gain || !tenths_db || chain > BIRRIASDR_CHAIN_BOTH || gain->lna > MT_GAIN_LNA_MAX ||
-        gain->lpf > MT_GAIN_LPF_MAX || gain->digital > MT_GAIN_DIGITAL_MAX)
+    if (!tenths_db)
         return BIRRIASDR_ERROR_INVALID;
-    *tenths_db = lna_tenths[column][gain->lna] + lpf_tenths[column][gain->lpf] +
-                 (chain == BIRRIASDR_CHAIN_BOTH ? 0 : MT_DIGITAL_TENTHS * gain->digital);
+    BS_TRY(mt_validate_gain(frequency, chain, gain));
+    if (extended_lpf(frequency, chain))
+        *tenths_db = lna_tenths_5g[gain->lna] + lpf_tenths_5g[gain->lpf];
+    else
+        *tenths_db = lna_tenths[column][gain->lna] + lpf_tenths[column][gain->lpf];
+    if (chain != BIRRIASDR_CHAIN_BOTH)
+        *tenths_db += MT_DIGITAL_TENTHS * gain->digital;
     return 0;
 }
 
-/* Overall-gain steps in ascending order: LNA 0..5 at LPF 0, then LPF 1..8 at
- * LNA 5, then (single-chain only) digital 1..12 at 5/8. Fills at most
- * `capacity` entries and returns the total count.
+/* Overall-gain steps in ascending order: LNA 0..5 at LPF 0, then the LPF codes
+ * at LNA 5 in order of measured gain, each kept only if it adds at least
+ * MT_STEP_MIN_TENTHS over the previous step, then (single-chain only) digital
+ * 1..12 at the top LPF step. Fills at most `capacity` entries and returns the
+ * total count.
  */
-int mt_gain_steps(unsigned chain, struct bs_gain_step *steps, size_t capacity)
+int mt_gain_steps(unsigned chain, uint64_t frequency, struct bs_gain_step *steps, size_t capacity)
 {
-    struct birriasdr_gain gain = {0, 0, 0};
-    unsigned digital_max = chain == BIRRIASDR_CHAIN_BOTH ? 0 : MT_GAIN_DIGITAL_MAX;
-    int count = 0;
-    if (chain > BIRRIASDR_CHAIN_BOTH)
-        return BIRRIASDR_ERROR_INVALID;
-    for (unsigned i = 0; i <= MT_GAIN_LNA_MAX + MT_GAIN_LPF_MAX + digital_max; ++i) {
-        if (i <= MT_GAIN_LNA_MAX)
-            gain = (struct birriasdr_gain){(uint8_t)i, 0, 0};
-        else if (i <= MT_GAIN_LNA_MAX + MT_GAIN_LPF_MAX)
-            gain.lpf = (uint8_t)(i - MT_GAIN_LNA_MAX);
-        else
-            gain.digital = (uint8_t)(i - MT_GAIN_LNA_MAX - MT_GAIN_LPF_MAX);
+    struct birriasdr_gain gain = {0, 0, 0}, maximum;
+    uint8_t order[MT_GAIN_LPF_MAX_5G + 1];
+    int tenths[MT_GAIN_LPF_MAX_5G + 1], previous, count = 0;
+    unsigned codes;
+    BS_TRY(mt_gain_limits(frequency, chain, &maximum));
+    /* LPF codes by measured gain at LNA 5; insertion sort keeps code order on ties. */
+    codes = maximum.lpf;
+    for (unsigned code = 1; code <= codes; ++code) {
+        struct birriasdr_gain probe = {MT_GAIN_LNA_MAX, (uint8_t)code, 0};
+        unsigned at = code - 1;
+        int value;
+        BS_TRY(mt_gain_tenths_db(chain, frequency, &probe, &value));
+        while (at > 0 && tenths[at - 1] > value) {
+            order[at] = order[at - 1];
+            tenths[at] = tenths[at - 1];
+            --at;
+        }
+        order[at] = (uint8_t)code;
+        tenths[at] = value;
+    }
+    for (unsigned lna = 0; lna <= MT_GAIN_LNA_MAX; ++lna) {
+        gain = (struct birriasdr_gain){(uint8_t)lna, 0, 0};
         if ((size_t)count < capacity) {
             steps[count].gain = gain;
-            BS_TRY(mt_gain_tenths_db(chain, &gain, &steps[count].tenths_db));
+            BS_TRY(mt_gain_tenths_db(chain, frequency, &gain, &steps[count].tenths_db));
+        }
+        ++count;
+    }
+    BS_TRY(mt_gain_tenths_db(chain, frequency, &gain, &previous));
+    for (unsigned i = 0; i < codes; ++i) {
+        if (tenths[i] < previous + MT_STEP_MIN_TENTHS)
+            continue;
+        gain.lpf = order[i];
+        previous = tenths[i];
+        if ((size_t)count < capacity) {
+            steps[count].gain = gain;
+            steps[count].tenths_db = tenths[i];
+        }
+        ++count;
+    }
+    for (unsigned digital = 1; chain != BIRRIASDR_CHAIN_BOTH && digital <= maximum.digital; ++digital) {
+        gain.digital = (uint8_t)digital;
+        if ((size_t)count < capacity) {
+            steps[count].gain = gain;
+            BS_TRY(mt_gain_tenths_db(chain, frequency, &gain, &steps[count].tenths_db));
         }
         ++count;
     }
