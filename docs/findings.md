@@ -75,10 +75,11 @@ receive-only.
 | Host USB queue depth, not USB aggregation, sets the gap rate | Established | §8 |
 | Most OFDM `bad_service` failures are 802.11n HT-mixed frames, not blanking | Established | §10 |
 | Per-symbol pilot slope fitting loses weak OFDM frames | Established | §10 |
-| At 5 GHz the capture floor sits after every analog gain stage, and chain 0 filter-stage codes 9 to 15 add up to 13 dB (LPF 14: +7 dB SNR) | Established | §7, §9 |
-| There is no sample blanking at 5 GHz, so packet-detect suppression has nothing to remove there | Established | §9 |
+| At 5 GHz the capture floor sits after every analog gain stage, and filter-stage codes 9 to 15 add up to 13 dB on either chain (LPF 14: +7 dB SNR on chain 0, +8 dB on chain 1) | Established | §7, §9 |
+| Chain 0 has no sample blanking at 5 GHz, so packet-detect suppression has nothing to remove there. Chain 1 does blank at 5 GHz | Established | §9 |
 | Weak legacy OFDM frames: a smoothed, L-SIG-aided estimate, smoothed pilot phase, an FCS-gated re-estimate and a lower STF threshold recover about 2.5 dB | Established | §10 |
 | At 5 GHz chain 0 now reaches 50% of beacons about 2 dB short of the stock driver per chain, and about 4 dB short of its two-chain receiver (the first estimate was 15 dB) | Single run, same hour | §9 |
+| With both chains at LPF 14 and combining, the whole-receiver gap at 5 GHz is about 1.3 dB | Single run, not same hour | §9 |
 
 ## 3. Sample blanking is the PHY packet detector
 
@@ -322,8 +323,8 @@ sweeps inside one stream, 0 overruns). Relative to LNA 0 / LPF 0 / digital 0:
 - **Released (unforced) gain:** chain 1 sits at a fixed LNA 5 / LPF 7 plus
   about 16.6 dB of digital gain, with no per-frame changes. Chain 0 behaves
   like a per-frame AGC, dipping on 40–44% of frames.
-- Chain 1's gain table is non-monotonic at high LPF codes: LPF 9, 10, 12, 13
-  and 15 collapse it by 9–14 dB. Only LNA 5 / LPF 11 helped (+3–5 dB), and in
+- At 2.4 GHz, chain 1's gain table is non-monotonic at high LPF codes: LPF 9,
+  10, 12, 13 and 15 collapse it by 9–14 dB. Only LNA 5 / LPF 11 helped (+3–5 dB), and in
   a 16+16 ABBA that bought no extra frames.
 
 The gain to measure against is a steady transmitter's frames, not the noise
@@ -331,7 +332,10 @@ floor: the floor is measured after the gain, so it can't measure the gain.
 
 Implemented as per-chain dB tables (`birriasdr_set_tuner_gain()`,
 `BIRRIASDR_CAP_GAIN_DB`, Soapy overall gain); see
-[mt7921.md](mt7921.md#gain-in-db). The table is measured at 2.4 GHz only.
+[mt7921.md](mt7921.md#gain-in-db). The 2.4 GHz tables come from one AP at
+2437 MHz. At 5 GHz each chain has its own table from live sweeps at 5240 to
+5785 MHz, where filter-stage codes 9 to 15 are allowed on every chain and
+2.4 GHz stays at 0 to 8 (§9).
 
 ## 8. Sample rates and the transport
 
@@ -410,7 +414,9 @@ These are early and mostly single runs, made after upstream added 5 GHz.
     beacons peaked about 30 dB below full scale. So added analog gain is SNR.
     The chain 0 filter-stage codes 9 to 15 supply it (§7): the LPF 14 code
     gave +7.1 dB SNR at 5240 MHz and +6.9 dB at 5180 MHz (6 of 6 ABBA pairs
-    each), moving our floor to about −95 dBm on the stock scale.
+    each), moving our floor to about −95 dBm on the stock scale. On chain 1
+    the same code gave +8.2 dB at 5805 MHz (6 of 6 pairs) and +8.4 dB at
+    5240 MHz (3 of 3), with none of the collapse chain 1 shows at 2.4 GHz.
   - **The decoder then lost about 2.5 dB at threshold** (§10). With the
     weak-frame changes in place, a final same-hour run over 21 APs on channels
     36, 48, 149 and 161 fitted the 50% beacon level at −91.3 dBm for us
@@ -423,15 +429,22 @@ These are early and mostly single runs, made after upstream added 5 GHz.
   - **Two-chain combining decides some APs.** On channel 161 one pair of
     BSSIDs reads −95 dBm on chain 0 and −92 dBm on chain 1. The stock driver
     decodes 94% of their beacons and we, on chain 0 alone, decode none.
+  - **Both chains at LPF 14 close most of the rest.** Two-chain capture at
+    LPF 14 on both chains, decoded with `--combine`, moved our 50% beacon
+    level from −90.7 dBm (chain 0 alone) to −94.6 dBm, against −95.7 dBm for
+    the stock driver: about 1.3 dB short as a whole receiver. That comparison
+    wasn't made in the same hour, and its upper bounds are loose.
   - **Some APs decode worse than their SNR suggests.** Two APs at about
     4.4 dB L-LTF SNR decode only 9 to 13%, where another AP at 3.4 dB decodes
     76%. A stronger AP whose data symbols don't match its own L-LTF channel
     (its estimate costs 1.45 dB even at 21 dB SNR) behaves the same way.
-- **No sample blanking at 5 GHz.** Every 5 GHz capture checked (5180, 5240,
-  plain and with packet-detect suppression, across days) has no zero runs of
-  8 or more samples. A 2.4 GHz capture from the same session has about one
-  per millisecond. So `--pd-n8` has nothing to remove at 5 GHz, and blanking
-  doesn't explain any 5 GHz loss.
+- **No sample blanking at 5 GHz on chain 0.** Every chain-0 5 GHz capture
+  checked (5180, 5240, plain and with packet-detect suppression, across days)
+  has no zero runs of 8 or more samples. A 2.4 GHz capture from the same
+  session has about one per millisecond. So `--pd-n8` has nothing to remove on
+  chain 0 at 5 GHz, and blanking doesn't explain any chain-0 loss there.
+  Chain 1 does blank at 5 GHz: its captures carry about 20 to 50 exact-zero
+  runs per second at filter stages 8 to 15.
 - **Stock band registers.** Comparing read-only PHY snapshots under the stock
   driver at channels 36 and 6 found 78 band-dependent fields. BirriaSDR never
   programs 48 of them, and leaves 15 at their 2.4 GHz values. Writing 13 of
@@ -592,8 +605,9 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 - Why the 20 MHz tap-12 edge alternates between two widths across captures.
 - The remaining 5 GHz gap of about 2 dB per chain: APs whose data symbols
   don't match their L-LTF channel, and about 1.3 dB of floor still above
-  thermal. Matching the stock driver as a whole receiver needs chain 1 at
-  filter-stage codes above 8 plus combining.
+  thermal. Chain 1 at filter-stage codes above 8 plus combining closed most
+  of the whole-receiver gap (§9). A same-hour comparison against the stock
+  driver is still to do.
 - HT frames at MCS 5–7 that still fail on SNR, and whether two-chain
   combining recovers them now that chain 1 is level with chain 0.
 - Chain 1's dB gain steps with bit 17 set.
