@@ -5,11 +5,18 @@
 #include "birriasdr.h"
 #include <errno.h>
 #include <signal.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static volatile sig_atomic_t interrupted;
+/* Shared by the signal handler, watcher and callback. Never use an atomic
+ * implementation that could take a lock from a signal handler. */
+static atomic_bool interrupted;
+_Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "the interrupt flag must be lock-free");
 struct recorder {
     birriasdr_dev_t *dev;
     FILE *file, *gaps;
@@ -26,7 +33,26 @@ struct recorder {
 static void on_signal(int signal_number)
 {
     (void)signal_number;
-    interrupted = 1;
+    atomic_store_explicit(&interrupted, true, memory_order_relaxed);
+}
+
+struct interrupt_watch {
+    birriasdr_dev_t *dev;
+    atomic_bool done;
+};
+
+/* STATE before read startup is expected. Keep retrying until the read returns,
+ * including when setup/recovery has not yet made cancellation available. */
+static void *watch_interrupt(void *context)
+{
+    struct interrupt_watch *watch = context;
+    const struct timespec period = {.tv_nsec = 10000000};
+    while (!atomic_load(&watch->done)) {
+        if (atomic_load_explicit(&interrupted, memory_order_relaxed))
+            (void)birriasdr_cancel_async(watch->dev);
+        nanosleep(&period, NULL);
+    }
+    return NULL;
 }
 
 /* Write conventional little-endian signed I,Q, preserving all 14 source bits.
@@ -164,8 +190,18 @@ int main(int argc, char **argv)
     uint64_t discard = 11719 * 2048;
     int result, close_result, argument = 1, explicit_gain = 0, buffered = 0;
     int pd_n8 = 0, explicit_discard = 0, chain = BIRRIASDR_CHAIN_0, channel_filter = 0;
-    int recover = 0;
+    int recover = 0, watching = 0;
+    struct interrupt_watch watch;
+    pthread_t watcher;
+    struct sigaction action = {0};
     char gaps_path[4096];
+    action.sa_handler = on_signal;
+    action.sa_flags = SA_RESTART;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGINT, &action, NULL) || sigaction(SIGTERM, &action, NULL)) {
+        perror("Signal handler");
+        return 1;
+    }
     if (argc == 2 && !strcmp(argv[1], "--list"))
         return list_devices();
     while (argument < argc && !strncmp(argv[argument], "--", 2)) {
@@ -274,6 +310,8 @@ int main(int argc, char **argv)
         return 1;
     }
     recorder.dev = dev;
+    if (atomic_load(&interrupted))
+        return birriasdr_close(dev) ? 1 : 0;
     if (rate) {
         result = birriasdr_set_sample_rate(dev, (uint32_t)rate);
         if (result < 0) {
@@ -322,6 +360,8 @@ int main(int argc, char **argv)
             return 1;
         }
     }
+    if (atomic_load(&interrupted))
+        return birriasdr_close(dev) ? 1 : 0;
     recorder.file = fopen(argv[argument], "wbx");
     if (!recorder.file) {
         perror("Output (must not already exist)");
@@ -362,12 +402,21 @@ int main(int argc, char **argv)
             }
         }
     }
-    signal(SIGINT, on_signal);
-    signal(SIGTERM, on_signal);
-    if (!result && buffered) {
-        /* Keep disk conversion/I/O out of the finite acquisition. Check signal
-         * cancellation after initialization and at most two seconds of RF.
-         * Do not save failed or interrupted buffered data.
+    if (!result && !atomic_load(&interrupted)) {
+        watch.dev = dev;
+        atomic_init(&watch.done, false);
+        int error = pthread_create(&watcher, NULL, watch_interrupt, &watch);
+        if (error) {
+            fprintf(stderr, "Interrupt watcher: %s\n", strerror(error));
+            result = BIRRIASDR_ERROR_NO_MEMORY;
+        } else {
+            watching = 1;
+        }
+    }
+    if (watching && buffered) {
+        /* Keep disk conversion/I/O out of the finite acquisition. The watcher
+         * also cancels callback-free finite reads. Never save failed or
+         * interrupted buffered data.
          */
         uint32_t received = 0;
         uint32_t total = (uint32_t)(recorder.limit + discard);
@@ -383,8 +432,13 @@ int main(int argc, char **argv)
         if (!result && !recorder.error)
             write_iq(iq + (size_t)discard * 2, received - (uint32_t)discard, &recorder);
         free(iq);
-    } else if (!result) {
+    } else if (watching) {
         result = birriasdr_read_async(dev, record, &recorder, 0, 0);
+    }
+    /* The watcher owns a borrowed handle: stop and join it before close. */
+    if (watching) {
+        atomic_store(&watch.done, true);
+        pthread_join(watcher, NULL);
     }
     birriasdr_get_stream_stats(dev, &stats);
     close_result = birriasdr_close(dev);
