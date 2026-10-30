@@ -37,6 +37,10 @@ PILOT_SIGNS = np.array([1, 1, 1, -1])
 # Kept mother-code bits per puncturing period, in A0 B0 A1 B1 ... order.
 PUNCTURE = {'1/2': [1, 1], '2/3': [1, 1, 1, 0], '3/4': [1, 1, 1, 0, 0, 1],
             '5/6': [1, 1, 1, 0, 0, 1, 1, 0, 0, 1]}
+# Pilot common phase is smoothed over +-CPE_SMOOTH symbols (pilot_phase).
+CPE_SMOOTH = 4
+# Re-estimation passes for a 6 Mbps legacy frame that fails FCS (reestimate).
+SECOND_PASSES = 2
 
 # HT-mixed (802.11n) 20 MHz, one spatial stream: 56 active subcarriers.
 HT_ACTIVE = np.r_[np.arange(-28, 0), np.arange(1, 29)]
@@ -66,7 +70,7 @@ def window_sum(x, width):
     return total[width:] - total[:-width]
 
 
-def detect_stf(x, threshold=0.65, chunk=1_000_000):
+def detect_stf(x, threshold=0.5, chunk=1_000_000):
     """Find sustained 0.8 us repetition, without an absolute power threshold.
 
     Use local sums in bounded chunks so memory and numerical drift stay bounded.
@@ -199,7 +203,13 @@ def pilot_phase(raw, expected, trend):
     and a wrong slope tilts the edge subcarriers of a whole symbol, while the
     trend still follows sampling-clock drift. Pilots are weighted by channel
     power, so a faded pilot's amplified noise cannot dominate. Without trend,
-    offset and slope are fitted to each symbol's pilots alone."""
+    offset and slope are fitted to each symbol's pilots alone.
+
+    With trend, the common phase is also smoothed over +-CPE_SMOOTH symbols
+    around its linear trend: four pilots give a noisy phase at low SNR, while
+    the true phase moves slowly (residual CFO plus drift; on the EDUP the
+    per-symbol phase jitter measured against re-encoded frames was no larger
+    than estimation noise at 5 GHz)."""
     q = [bins[PILOTS % 64] * np.conj(e) for bins, e in zip(raw, expected)]
     if not trend:
         return [tuple(np.polyfit(PILOTS, np.unwrap(np.angle(v)), 1)[::-1]) for v in q]
@@ -207,7 +217,14 @@ def pilot_phase(raw, expected, trend):
     if len(q) > 1:
         n = np.arange(len(q))
         slopes = np.polyval(np.polyfit(n, slopes, 1), n)
-    return [(np.angle(np.sum(v * np.exp(-1j * slope * PILOTS))), slope) for v, slope in zip(q, slopes)]
+    offsets = [np.angle(np.sum(v * np.exp(-1j * slope * PILOTS))) for v, slope in zip(q, slopes)]
+    if len(q) > 2:
+        n = np.arange(len(q))
+        offsets = np.unwrap(offsets)
+        line = np.polyval(np.polyfit(n, offsets, 1), n)
+        width = 2 * CPE_SMOOTH + 1
+        offsets = line + np.convolve(np.pad(offsets - line, CPE_SMOOTH, mode='edge'), np.ones(width) / width, 'valid')
+    return list(zip(offsets, slopes))
 
 
 def derotated(corrected, starts, expected, data, trend):
@@ -221,6 +238,71 @@ def equalize(corrected, h, starts, refs, data, trend=False):
     """One spatial stream: refs are the pilot values sent in each symbol."""
     expected = [h[PILOTS % 64] * ref for ref in refs]
     return [z / h[data % 64] for z in derotated(corrected, starts, expected, data, trend)]
+
+
+def encode(bits):
+    """K=7 rate-1/2 convolutional code (generators 133, 171 octal)."""
+    state, out = 0, np.empty(2 * len(bits), dtype=np.uint8)
+    for i, bit in enumerate(bits):
+        state = ((state << 1) | int(bit)) & 127
+        out[2 * i], out[2 * i + 1] = (state & 0o155).bit_count() & 1, (state & 0o117).bit_count() & 1
+    return out
+
+
+def bpsk_symbols(coded):
+    """Coded bits, 48 per symbol, to interleaved legacy BPSK values on DATA."""
+    rows = np.asarray(coded).reshape(-1, 48)
+    out = np.empty(rows.shape, dtype=np.float32)
+    k = np.arange(48)
+    out[:, 3 * (k % 16) + k // 16] = 2.0 * rows - 1
+    return out
+
+
+def scramble(bits, seed):
+    state, out = seed, np.array(bits, dtype=np.uint8)
+    for i in range(len(out)):
+        f = ((state >> 6) ^ (state >> 3)) & 1
+        out[i] ^= f
+        state = ((state << 1) | f) & 127
+    return out
+
+
+def reestimate(corrected, h_ltf, lsig, starts, refs, decoded, length, nsym):
+    """For a 6 Mbps legacy frame: re-encode the first decode (its errors
+    included) into transmitted symbols and use every symbol as training.
+    The channel (smoothed, with the two L-LTF symbols at weight 2) and each
+    symbol's phase (common phase, plus a slope trend over the frame) are
+    fitted to them. Returns equalized data symbols and LLR reliability, or
+    None when the decoded SERVICE bits give no scrambler seed."""
+    seed = next((s for s in range(1, 128) if np.array_equal(scramble(np.zeros(7, np.uint8), s), decoded[:7])), None)
+    if seed is None:
+        return None
+    plain = scramble(np.r_[decoded, np.zeros(nsym * 24 - len(decoded), np.uint8)], seed)
+    plain[:16] = 0
+    plain[16 + 8 * length:] = 0
+    bits = scramble(plain, seed)
+    bits[16 + 8 * length:16 + 8 * length + 6] = 0
+    X = np.zeros((nsym + 1, 64))
+    X[0, DATA % 64] = lsig
+    X[1:, DATA % 64] = bpsk_symbols(encode(bits))
+    for i, r in enumerate([PILOT_SIGNS * POLARITY[0]] + list(refs)):
+        X[i, PILOTS % 64] = r
+    Y = np.array([np.fft.fft(corrected[a:a + 64]) for a in [144] + list(starts)])
+    k = ACTIVE % 64
+    H = h_ltf.copy()
+    n = np.arange(len(Y))
+    for _ in range(2):
+        q = Y[:, k] * X[:, k] * np.conj(H[k])
+        raw = np.array([np.polyfit(ACTIVE, np.unwrap(np.angle(v)), 1, w=np.abs(H[k]))[0] for v in q])
+        beta = np.polyval(np.polyfit(n, raw, 1), n)
+        phi = np.angle((q * np.exp(-1j * beta[:, None] * ACTIVE)).sum(1))
+        rot = np.exp(-1j * (phi[:, None] + beta[:, None] * ACTIVE))
+        H = h_ltf.copy()
+        H[k] = LEGACY_SMOOTH @ ((2 * h_ltf[k] + (Y[:, k] * rot * X[:, k]).sum(0)) / (2 + len(Y)))
+    H = np.where(np.abs(H) > 1e-12, H, 1e-12)
+    z = [Y[i, DATA % 64] * np.exp(-1j * (phi[i] + beta[i] * DATA)) / H[DATA % 64] for i in range(1, len(Y))]
+    reliability = np.abs(H[DATA % 64]) ** 2
+    return z, reliability / max(float(np.median(reliability)), 1e-20)
 
 
 def equalize_stbc(corrected, h1, h2, starts, refs1, refs2, data, trend=False):
@@ -349,8 +431,16 @@ def decode_candidate(x, candidate, coarse):
     corrected = x[ltf:end] * np.exp(-1j * omega * np.arange(end - ltf))
     h = (np.fft.fft(corrected[:64]) + np.fft.fft(corrected[64:128])) / 2
     h[ACTIVE % 64] /= LTF_BINS[ACTIVE % 64]
-    reliability = np.abs(h[DATA % 64]) ** 2
-    reliability /= max(float(np.median(reliability)), 1e-20)
+    # The legacy estimate is smoothed like the HT one (-12..+16 taps): at
+    # 3-5 dB SNR the raw two-symbol estimate, and the |h|^2 LLR weights taken
+    # from it, cost about 1 dB each.
+    h_ltf = h.copy()
+    h[ACTIVE % 64] = LEGACY_SMOOTH @ h[ACTIVE % 64]
+
+    def weights(hh):
+        r = np.abs(hh[DATA % 64]) ** 2
+        return r / max(float(np.median(r)), 1e-20)
+    reliability = weights(h)
     h = np.where(np.abs(h) > 1e-12, h, 1e-12)
 
     def legacy(first, count):
@@ -367,6 +457,16 @@ def decode_candidate(x, candidate, coarse):
     if (rate_code not in RATES or header[4] or header[:18].sum() % 2 or
             header[18:].any() or not 4 <= length <= 4095):
         return None
+    # Once its parity passes, L-SIG is known and becomes a third training
+    # symbol (its own pilot phase removed), averaged 1:2 with the L-LTF.
+    lsig_bits = bpsk_symbols(encode(header[:24]))[0]
+    x0 = np.zeros(64)
+    x0[DATA % 64], x0[PILOTS % 64] = lsig_bits, PILOT_SIGNS * POLARITY[0]
+    y0 = derotated(corrected, [144], [h[PILOTS % 64] * PILOT_SIGNS * POLARITY[0]], ACTIVE, False)[0]
+    h = h_ltf.copy()
+    h[ACTIVE % 64] = LEGACY_SMOOTH @ ((2 * h_ltf[ACTIVE % 64] + y0 * x0[ACTIVE % 64]) / 3)
+    h = np.where(np.abs(h) > 1e-12, h, 1e-12)
+    reliability = weights(h)
     rate, bpsc, dbps = RATES[rate_code]
     result = {'sample': int(max(0, ltf - 192)), 'time_ms': float(max(0, ltf - 192) / 20000),
               'rate_mbps': rate, 'length': length, 'cfo_hz': float(omega * FS / (2 * np.pi)),
@@ -438,10 +538,13 @@ def decode_candidate(x, candidate, coarse):
         return dict(result, status='truncated')
     pattern = PUNCTURE[code] if code else None
 
+    last = {}
+
     def payload(symbols):
         soft = np.concatenate([deinterleave(demap(symbol, bpsc, reliability), bpsc, columns, carriers)
                                for symbol in symbols])
         decoded = viterbi(depuncture(soft, nsym * dbps, dbps, pattern)[:16 + 8 * length + 6])
+        last['decoded'] = decoded
         plain = unscramble(decoded)
         if plain is None or plain[:16].any():
             return dict(result, status='bad_service')
@@ -467,12 +570,26 @@ def decode_candidate(x, candidate, coarse):
         retry = payload(equalizer(trend=False))
         if retry.get('ampdu_valid', int(retry['fcs_ok'])) > packet.get('ampdu_valid', int(packet['fcs_ok'])):
             packet = dict(retry, tracking='per_symbol')
+    if not packet['fcs_ok'] and 'ofdm_format' not in result and rate_code == 11:
+        # 6 Mbps legacy (beacons and most weak frames): re-estimate from the
+        # first decode's own symbols, again from each new decode, and keep a
+        # pass only if its FCS passes. Decisions start from the trend pass.
+        payload(equalizer(trend=True))
+        for n in range(SECOND_PASSES):
+            again = reestimate(corrected, h_ltf, lsig_bits, starts, refs, last['decoded'], length, nsym)
+            if again is None:
+                break
+            symbols, reliability = again
+            retry = payload(symbols)
+            if retry['fcs_ok']:
+                packet = dict(retry, tracking=f'second_pass_{n + 1}')
+                break
     if unclear and not packet['fcs_ok']:
         packet = dict(packet, status=unclear)
     return packet
 
 
-def decode_channel(x, center, channel, threshold=0.65):
+def decode_channel(x, center, channel, threshold=0.5):
     off = (channel_mhz(channel) - center) * 1e6
     if abs(off) > 9e6:
         raise ValueError('Channel is too far from capture center for a complete 20 MHz channel')
@@ -500,7 +617,7 @@ def main():
     ap.add_argument('--center', type=float, required=True)
     ap.add_argument('--channel', type=int, nargs='+', choices=CHANNELS, metavar='N',
                     help='2.4 or 5 GHz channel number(s) (default: the one at the centre)')
-    ap.add_argument('--stf-threshold', type=float, default=0.65)
+    ap.add_argument('--stf-threshold', type=float, default=0.5)
     ap.add_argument('--json', type=Path, help='Write packet results; only valid frames include identities')
     args = ap.parse_args()
     if not 0 < args.stf_threshold < 1:

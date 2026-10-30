@@ -50,7 +50,8 @@ lie within 9 MHz of the capture centre in both bands.
 `--phy both` is the default. DSSS uses a 6 dB threshold above the lower-fifth
 power estimate and accepts bursts of at least 60 microseconds. Change these
 with `--threshold-db` and `--min-us`. OFDM uses normalized short-training
-correlation (`--stf-threshold 0.65`) instead of the DSSS power/duration gate.
+correlation (`--stf-threshold 0.5`; 0.65 until 2026-10-29) instead of the
+DSSS power/duration gate.
 Lower thresholds can produce more candidates; valid MAC FCS remains mandatory
 for AP identities and PCAP output. A valid legacy SIGNAL header alone is not a
 decoded MAC frame. Diagnostics retain failed payloads without interpreting their
@@ -69,6 +70,33 @@ passes (the packet then carries `tracking: per_symbol`); this wins back the
 frames the trend loses, such as those with a timing step mid-frame. On the
 ch 11 fixture it recovers all 12. See
 [findings §10](../../docs/findings.md#10-decoder-findings).
+
+Weak legacy frames (2026-10-29, aimed at 5 GHz beacons at 3–5 dB SNR):
+- **Channel estimate:** the legacy L-LTF estimate is smoothed onto −12..+16
+  taps like the HT one. Once L-SIG passes parity, that symbol is used as a
+  third training symbol (1:2 with the L-LTF). The LLR weights come from the
+  smoothed estimate.
+- **Pilot tracking:** the common phase is smoothed over ±`CPE_SMOOTH` (4)
+  symbols around its linear trend.
+- **Second pass:** a 6 Mbps legacy frame that still fails FCS is re-encoded
+  from its own decode. Channel and phase are re-estimated from every symbol,
+  and it is decoded again, up to `SECOND_PASSES` (2) times. A pass counts
+  only if its FCS passes (`tracking: second_pass_N`).
+- **Detection:** the STF threshold dropped to 0.5. Lowering it only pays off
+  together with the changes above.
+
+Results:
+- **Noise injection on real 5 GHz frames:** the SNR needed for 50% of
+  beacons fell by 2.5 dB (4.3 → 1.6 dB L-LTF SNR on one AP's channels,
+  against 0.1 dB for a genie receiver).
+- **A held-out 2 s capture at 5240 MHz:** 27 → 52 valid frames, with a
+  −90 dBm AP going from 4 to 17 of its ~19.5 beacons.
+- **A same-hour comparison with the stock driver:** the 50% beacon level
+  per chain improved by about 1.9 dB on identical samples.
+- **2.4 GHz channel 11:** +28/−0 and +22/−3 frames on two 2 s captures,
+  with runtime up 29–36% there.
+
+See [findings §10](../../docs/findings.md#10-decoder-findings).
 
 HT-mixed (802.11n) frames are recognised after a 6 Mbps L-SIG by two QBPSK
 HT-SIG symbols whose CRC-8 and tail check out; a frame whose HT-SIG fails is

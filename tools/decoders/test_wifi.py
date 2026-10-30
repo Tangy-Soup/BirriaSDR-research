@@ -236,6 +236,26 @@ class OfdmTests(unittest.TestCase):
         good = [p for p in packets if p is not None and p['fcs_ok']]
         self.assertEqual([p['frame'] for p in good], [frame])
 
+    def test_weak_6_mbps_frames_at_3_db(self):
+        # Beacon-sized 6 Mbps frames at 3 dB SNR through a multipath channel:
+        # the smoothed and L-SIG-aided estimate, smoothed common phase and the
+        # FCS-gated re-estimate decode 11 of these 12; the 2026-10-28 receiver
+        # decoded 3. Every accepted frame must be the one sent.
+        decoded = 0
+        for seed in range(12):
+            wave, frame = ofdm_wave(6, padding=400)
+            wave = np.convolve(wave, [1, 0.3 + .2j, 0, -.15j])
+            power = np.mean(np.abs(wave) ** 2)
+            wave = np.r_[np.zeros(400), wave, np.zeros(400)]
+            wave = wave * np.exp(1j * (0.4 + 2 * np.pi * 30000 * np.arange(len(wave)) / rx.FS))
+            rng = np.random.default_rng(seed)
+            sigma = np.sqrt(power / 10 ** 0.3 / 2 * 64 / 52)
+            wave = (wave + sigma * (rng.normal(size=len(wave)) + 1j * rng.normal(size=len(wave)))).astype(np.complex64)
+            good = [p for p in (rx.decode_candidate(wave, a, c) for a, c in rx.detect_stf(wave)) if p and p['fcs_ok']]
+            self.assertTrue(all(p['frame'] == frame for p in good))
+            decoded += bool(good)
+        self.assertGreaterEqual(decoded, 10)
+
     def test_timing_step_mid_frame_uses_per_symbol_retry(self):
         # Two repeated samples at a symbol boundary step the phase slope
         # halfway through; one linear trend cannot follow that, so only the

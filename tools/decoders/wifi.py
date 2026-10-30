@@ -136,7 +136,7 @@ def merge_branches(packets):
     return out
 
 
-def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_threshold=.65,
+def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_threshold=.5,
             dsss_sync_search=True, window_samples=20_000_000, cck=False, recover=False, dc_block=0,
             combine=False, slot=0, of=1):
     """Decode bounded windows with ownership by preamble time, retaining boundaries.
@@ -288,7 +288,7 @@ def main():
     ap.add_argument('--phy', choices=['both', 'dsss', 'ofdm'], default='both')
     ap.add_argument('--threshold-db', type=float, default=6)
     ap.add_argument('--min-us', type=float, default=60)
-    ap.add_argument('--stf-threshold', type=float, default=.65)
+    ap.add_argument('--stf-threshold', type=float, default=.5)
     ap.add_argument('--no-dsss-sync-search', action='store_true', help='Disable despread sync search for comparisons')
     ap.add_argument('--cck', action='store_true', help='Enable experimental 5.5/11 Mbps CCK payload decoding')
     ap.add_argument('--recover', action='store_true',
