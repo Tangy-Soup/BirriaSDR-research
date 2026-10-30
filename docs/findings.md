@@ -75,7 +75,10 @@ receive-only.
 | Host USB queue depth, not USB aggregation, sets the gap rate | Established | §8 |
 | Most OFDM `bad_service` failures are 802.11n HT-mixed frames, not blanking | Established | §10 |
 | Per-symbol pilot slope fitting loses weak OFDM frames | Established | §10 |
-| At 5 GHz the receiver is about 15 dB less sensitive than the stock driver on the same chip | Single run | §9 |
+| At 5 GHz the capture floor sits after every analog gain stage, and chain 0 filter-stage codes 9 to 15 add up to 13 dB (LPF 14: +7 dB SNR) | Established | §7, §9 |
+| There is no sample blanking at 5 GHz, so packet-detect suppression has nothing to remove there | Established | §9 |
+| Weak legacy OFDM frames: a smoothed, L-SIG-aided estimate, smoothed pilot phase, an FCS-gated re-estimate and a lower STF threshold recover about 2.5 dB | Established | §10 |
+| At 5 GHz chain 0 now reaches 50% of beacons about 2 dB short of the stock driver per chain, and about 4 dB short of its two-chain receiver (the first estimate was 15 dB) | Single run, same hour | §9 |
 
 ## 3. Sample blanking is the PHY packet detector
 
@@ -394,17 +397,47 @@ These are early and mostly single runs, made after upstream added 5 GHz.
   tuned ±10 MHz off-centre was about 34 dB at 5 GHz and 28–33 dB at 2.4 GHz,
   with a small DC spur in both bands. Missing I/Q calibration doesn't explain
   the weak-AP losses.
-- **Sensitivity gap against the stock driver.** On the same chip and
-  antennas, `mt7921u` in monitor mode logged about 300 beacons in 30 s from a
-  channel-36 AP at about −84 dBm. BirriaSDR detected the same 303 frames, but
-  none passed FCS. A channel-48 AP at about −78 dBm decoded only partly. That
-  puts BirriaSDR roughly 15 dB behind (the stock RSSI is uncalibrated). Part
-  of this was the decoder (§10); stock two-chain combining (about 3 dB) and
-  uncalibrated RF are the other candidates.
+- **Sensitivity against the stock driver.** The first comparison, on
+  different days and antennas, put BirriaSDR about 15 dB behind `mt7921u`.
+  Same-hour runs (BirriaSDR, then the stock driver in passive monitor mode,
+  then BirriaSDR again, antennas untouched) refined it:
+  - **Before any change** the gap was about 10 dB per chain, the same on
+    channels 36 and 48. Expressed on the stock driver's chain-0 dBm scale, our
+    floor was about −88 dBm.
+  - **The floor is fixed after every analog stage.** At 5 GHz, minimum and
+    maximum LNA and filter-stage codes give the same captured floor within
+    0.2 dB, with no spurs. The signal tracked LNA and filter codes 1:1, and
+    beacons peaked about 30 dB below full scale. So added analog gain is SNR.
+    The chain 0 filter-stage codes 9 to 15 supply it (§7): the LPF 14 code
+    gave +7.1 dB SNR at 5240 MHz and +6.9 dB at 5180 MHz (6 of 6 ABBA pairs
+    each), moving our floor to about −95 dBm on the stock scale.
+  - **The decoder then lost about 2.5 dB at threshold** (§10). With the
+    weak-frame changes in place, a final same-hour run over 21 APs on channels
+    36, 48, 149 and 161 fitted the 50% beacon level at −91.3 dBm for us
+    (chain 0) against −93.1 dBm for the stock driver at its combined level,
+    a gap of 2.0 dB [0.1, 18.1] per chain. The decoder before the change,
+    on the same samples, was 3.9 dB short. As a whole receiver, stock reaches
+    −95.4 dBm on its chain-0 axis, 4.3 dB [1.9, 11.7] ahead, because it
+    combines two chains. The upper CI bounds are loose because few APs sit
+    below stock's 50% level.
+  - **Two-chain combining decides some APs.** On channel 161 one pair of
+    BSSIDs reads −95 dBm on chain 0 and −92 dBm on chain 1. The stock driver
+    decodes 94% of their beacons and we, on chain 0 alone, decode none.
+  - **Some APs decode worse than their SNR suggests.** Two APs at about
+    4.4 dB L-LTF SNR decode only 9 to 13%, where another AP at 3.4 dB decodes
+    76%. A stronger AP whose data symbols don't match its own L-LTF channel
+    (its estimate costs 1.45 dB even at 21 dB SNR) behaves the same way.
+- **No sample blanking at 5 GHz.** Every 5 GHz capture checked (5180, 5240,
+  plain and with packet-detect suppression, across days) has no zero runs of
+  8 or more samples. A 2.4 GHz capture from the same session has about one
+  per millisecond. So `--pd-n8` has nothing to remove at 5 GHz, and blanking
+  doesn't explain any 5 GHz loss.
 - **Stock band registers.** Comparing read-only PHY snapshots under the stock
   driver at channels 36 and 6 found 78 band-dependent fields. BirriaSDR never
-  programs 48 of them, and leaves 15 at their 2.4 GHz values. Writing those 15
-  changed nothing measurable in one inconclusive run.
+  programs 48 of them, and leaves 15 at their 2.4 GHz values. Writing 13 of
+  those 15 raised beacon SNR by only 0.5 dB (16 of 20 ABBA pairs). Of the RF
+  front-end fields upstream PR #9 sets, only one trim field accepts a write
+  after prepare, and it changed nothing (−0.02 dB).
 - LNA 5 is best at 5 GHz too (about +12 dB SNR over LNA 3, matching reports in
   upstream PR #8).
 - A 25-channel scan found no APs on channels 52–144 at this location.
@@ -448,6 +481,37 @@ samples, a rescan went from 256 to 313 valid frames; 5 GHz channel 149 went
 from 2 to 23; a 2.4 GHz channel-11 recording went from 124 to 162 with no
 frames lost. Preamble or LTF match tracks channel shape, not SNR, so it is a
 poor predictor of decodability.
+
+**Weak legacy frames at 5 GHz** (established). With chain 0 at LPF 14, the
+decoder needed about 3.6 dB L-LTF SNR for 50% of 6 Mbps beacons. A receiver
+with a perfect channel estimate and correct LLRs needs about 0.1 dB on the
+same channels.
+- **Where the loss came from.** Re-encoding correctly decoded frames gives
+  the exact transmitted symbols. Against that genie, at about 5 dB SNR:
+  - The two-symbol L-LTF channel estimate costs about 0.9 dB.
+  - Pilot phase tracking costs 0.7 dB.
+  - Weighting the LLRs by the noisy |h|² from that estimate costs about
+    1.1 dB.
+
+  The genie's per-symbol common-phase jitter equals estimation noise alone,
+  so the true phase moves slowly and can be smoothed. Moving the FFT window
+  into the cyclic prefix changes nothing.
+- **What the decoder does now:**
+  - It projects the legacy estimate onto −12..+16 taps, as for HT.
+  - It adds L-SIG as a third training symbol once its parity passes.
+  - It smooths the pilot common phase over ±4 symbols around its trend.
+  - For a 6 Mbps legacy frame that fails FCS, it re-encodes its own decode,
+    re-estimates channel and phase from every symbol and decodes again (up to
+    twice, kept only if FCS passes).
+  - The STF detection threshold dropped from 0.65 to 0.5. Lowering it alone
+    gains nothing, but once decoding improves the detector is the limit (it
+    found only half of the frames near 3.3 dB).
+- **Results.** Noise injection on real 5 GHz frames, paired, moved the 50%
+  SNR by −2.47 dB [−2.66, −2.27]. On one AP's channels it went from 4.3 to
+  1.6 dB. A held-out 2 s capture at 5240 MHz went from 27 to 52 valid frames,
+  with a −90 dBm AP going from 4 to 17 of its 19.5 beacons. At 2.4 GHz,
+  two 2 s channel-11 captures gained 28 and 22 frames and lost 0 and 3, with
+  runtime up 29 to 36%.
 
 **DSSS timing.** A Barker sidelobe bug in symbol timing failed about 2.6% of
 strong, intact frames; fixed. A RAKE retry (chip-spaced lags weighted by their
@@ -517,12 +581,19 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 | Antenna variants and room changes (§4) | No improvement over antenna straight out |
 | Higher chain-1 gain (LNA 5 / LPF 11) | +3–5 dB SNR, no extra frames |
 | A latch pulse for the bimodal 20 MHz tap-12 edge | Still bimodal |
+| Packet-detect suppression (`--pd-n8`) at 5 GHz | Nothing to remove: no blanking at 5 GHz (§9) |
+| Per-subcarrier noise weighting of OFDM LLRs at 5 GHz | 0.18 dB worse: the 5 GHz floor is flat, and estimating it adds noise |
+| Decision-directed common phase on top of smoothed pilot phase | No further gain |
+| Coarse CFO re-estimated from the STF before the found L-LTF | No change at any STF threshold |
+| Moving the OFDM FFT window into the cyclic prefix | Flat within 0.1 dB |
 
 ## 13. Open questions
 
 - Why the 20 MHz tap-12 edge alternates between two widths across captures.
-- The remaining 5 GHz sensitivity gap: the stock per-band tables and
-  calibration results BirriaSDR doesn't apply, and stock two-chain combining.
+- The remaining 5 GHz gap of about 2 dB per chain: APs whose data symbols
+  don't match their L-LTF channel, and about 1.3 dB of floor still above
+  thermal. Matching the stock driver as a whole receiver needs chain 1 at
+  filter-stage codes above 8 plus combining.
 - HT frames at MCS 5–7 that still fail on SNR, and whether two-chain
   combining recovers them now that chain 1 is level with chain 0.
 - Chain 1's dB gain steps with bit 17 set.
