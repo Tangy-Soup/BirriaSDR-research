@@ -19,8 +19,12 @@
 > [docs/findings.md](docs/findings.md). The adapter's USB 3 self-noise and the
 > foil shield that removed most of it are covered under
 > [antenna placement and shielding](#antenna-placement-and-shielding).
-> Several of these additions overlap open
-> upstream pull requests that take different approaches.
+>
+> Upstream has moved on since `cbe0575`. Its `main` at `8ddab14` (30 October
+> 2026) has its own SoapySDR module, a UDP sender and 10, 20 and 80 MSps, each
+> built differently from the versions here. This fork is not rebased onto it.
+> The differences are listed under
+> [fork and upstream compared](#fork-and-upstream-compared).
 >
 > Upstream's own testing, described below, is on a COMFAST `3574:6211` dongle
 > with the same MT7961 and MT7972 dies. This fork's additions were tested only
@@ -121,6 +125,37 @@ For more detail, see:
 | Output format | Interleaved signed 16-bit I and Q (`cs16`). Buffers from the API are native-endian, and recorder files are little-endian |
 | Firmware | Original 1,664-byte RAM program. No vendor firmware and nothing flashed |
 | Host platforms | Linux, tested on a Raspberry Pi 5, and macOS, tested on an Apple Silicon Mac |
+
+### Fork and upstream compared
+
+Upstream merged its own versions of several of this fork's additions after the
+fork was based. This table compares the fork's `soapysdr-module` branch with
+upstream `main` at `8ddab14`, as each project documents it:
+
+| | This fork | Upstream `main` |
+| --- | --- | --- |
+| Base | Upstream `cbe0575` (25 October 2026), not rebased | `8ddab14` (30 October 2026) |
+| Sample rates | 40 MSps, plus 20 MSps from a 2:1 halfband filter on the host, flat to ±8.5 MHz, with unchanged USB traffic. The 80 MSps rate is experimental and 2.4 GHz only | 10, 20, 40 and 80 MSps from the device. At 10 and 20 MSps the chip packs samples from a faster tap, and 10 MSps halves the USB traffic |
+| Receive chains | Chain 0, chain 1, or both interleaved | Chain 0 |
+| Gain | Raw codes, with filter stage 0 to 15 at 5 GHz, or an overall gain from measured relative dB tables | Raw codes, filter stage 0 to 8. Not in dB |
+| Capture blanking | `--pd-n8` removes the zero runs | Not documented |
+| Channel-filtered tap | `--channel-filter` | No. The 10 MSps rate uses a narrower digital filter |
+| SoapySDR module | `driver=birriasdr`, opt-in build flag. Sample-count timestamps, 20 or 40 MHz bandwidth, and settings for blanking suppression, the channel-filtered tap and the restart budget | `driver=birria`, built whenever SoapySDR is installed. All four native rates, with rate changes while streaming. No timestamps or bandwidth control |
+| Network output | None | `birria_udp`, raw CS16 over UDP |
+| Other tools | `birria_ble`, `birria_rx --recover`, and the Python Wi-Fi and BLE decoders | None |
+| Tested hardware | EDUP EP-AX1672 (`0e8d:7961`) under WSL2 and usbipd | COMFAST `3574:6211` on a Raspberry Pi 5 and macOS, and a generic-ID board |
+
+The two SoapySDR modules have different driver keys and file names, but both
+projects install their library as `libbirriasdr`. Install them in separate
+prefixes, and point `SOAPY_SDR_PLUGIN_PATH` at the module you want. Only one
+can stream from a dongle at a time.
+
+The two ways of making 20 MSps were compared once, on 25 October 2026, against
+upstream pull request #14 before upstream's later filter changes. The packed
+capture let a signal 12 MHz off-centre fold in at about −10 dB, and the
+halfband showed no alias, as
+[findings §8](docs/findings.md#8-sample-rates-and-the-transport) records. That test
+has not been repeated against `8ddab14`.
 
 ### Antenna placement and shielding
 
