@@ -71,8 +71,11 @@ block was found on the low range in runs before and after. On the high range
 it was found under none of the 16 `0xc00[5:2]` LO-path values with either
 front end (32 runs). The only activity on the high range was wideband noise
 bursts timed to Wi-Fi beacons. These overrides came from a research build,
-and bring-up rewrites both fields on every open. See
-[mt7921.md](mt7921.md#5-ghz).
+and bring-up rewrites both fields on every open. The 5 GHz path calibrates
+from 4250 to 6273 MHz, failing at 4249 and 6274 MHz with the same result on
+every repeat. Reception is checked only from 5180 to 5815 MHz: no known
+signal was on air outside that, and every 20 MHz channel from 5955 to
+6255 MHz was quiet. See [mt7921.md](mt7921.md#5-ghz).
 
 ## 2. Summary
 
@@ -87,7 +90,7 @@ and bring-up rewrites both fields on every open. See
 | LNA codes 4 and 5 exist and help; measured gain table in dB | Established | §7 |
 | 80 MSps works over usbipd with the Mtk79ICAP 2.4 GHz BW80 recipe | Established | §8 |
 | Host USB queue depth, not USB aggregation, sets the gap rate | Established | §8 |
-| The 2.4 GHz synthesizer calibrates from 2171 to 2652 MHz on this unit. The high VCO range calibrates beyond that but receives nothing under any LO-path value | Established | §1, §12 |
+| The 2.4 GHz synthesizer calibrates from 2171 to 2652 MHz on this unit. The high VCO range calibrates beyond that but receives nothing under any LO-path value. The 5 GHz path calibrates from 4250 to 6273 MHz, but reception is checked from 5180 to 5815 MHz only | Established | §1, §12 |
 | Most OFDM `bad_service` failures are 802.11n HT-mixed frames, not blanking | Established | §10 |
 | Per-symbol pilot slope fitting loses weak OFDM frames | Established | §10 |
 | At 5 GHz the capture floor sits after every analog gain stage, and filter-stage codes 9 to 15 add up to 13 dB on either chain (LPF 14: +7 dB SNR on chain 0, +8 dB on chain 1) | Established | §7, §9 |
