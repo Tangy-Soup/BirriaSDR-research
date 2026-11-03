@@ -328,6 +328,8 @@ chain 0 and odd-numbered ones are chain 1, each at 40 MSps. Counts and
 `--discard` are in interleaved samples and must be even, so the `--pd-n8`
 default discard doubles to 48,001,024. Both-chain samples carry a DC offset per chain that the
 library does not remove; subtract it before demodulating.
+The decoder's `wifi.py --combine` ([tools/decoders](tools/decoders/README.md)) removes it
+and decodes both chains, their combination and, at 5 GHz, a per-subcarrier combination.
 
 Before you start, the dongle must have **no vendor ROM patch loaded**, and its
 Wi-Fi interface must be free for libusb to claim. A software reset does not
