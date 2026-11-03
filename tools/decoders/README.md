@@ -241,11 +241,13 @@ without `--of`, an interleaved file decodes nothing useful.
 
 `--combine` decodes three branches and counts each FCS-valid frame once:
 chain 0, chain 1, and a noise-whitened combination of the two
-(`combine.py`). Every frame records the branches that decoded it
-(`branches`, e.g. `["wf0", "mrc"]`), and the JSON's `combine` section gives
-per-branch counts (`mrc_only` = frames only the combination decoded) and,
-per channel, the estimated slot-1 delay and noise correlation. It implies
-`--dc-block 65536` unless given, and costs about three single-slot decodes.
+(`combine.py`). For OFDM on 5 GHz channels it adds a fourth branch, `fd`,
+which combines the two chains per subcarrier (`combine_fd.py`, below). Every
+frame records the branches that decoded it (`branches`, e.g.
+`["wf0", "mrc", "fd"]`), and the JSON's `combine` section gives per-branch
+counts (`mrc_only` and `fd_only` = frames only that branch decoded) and, per
+channel, the estimated slot-1 delay and noise correlation. It implies
+`--dc-block 65536` unless given, and costs about four single-slot decodes.
 
 - The chains' noise is correlated (|ρ| 0.45–0.57 in-band in our
   recordings), and slot 1 is offset from slot 0 by up to 0.9 samples, varying
@@ -259,6 +261,31 @@ per channel, the estimated slot-1 delay and noise correlation. It implies
   lost none, among them four beacons from a weak AP that neither slot heard.
   Branches keep the union, so the combination can only add frames; on its own
   it misses some short OFDM frames on busy channels.
+- **Per-subcarrier combining (`fd`).** The two antennas fade independently
+  across the band, and the delay between them depends on the transmitter
+  (on one 5 GHz channel, −1.8 samples for a weak AP against +0.2 for the
+  others). One broadband weight pair and one delay per capture can't follow
+  either. At each STF candidate of the combined stream, `fd` takes both
+  chains' FFTs at that frame's timing and combines them per subcarrier
+  (whitened MRC: per-chain smoothed L-LTF estimates, the combiner's noise
+  covariance, unit noise per combined bin). The combined bins are rebuilt
+  into a CFO-free stream that `wifi_ofdm.decode_candidate` decodes unchanged.
+  A 6 Mbps legacy frame that fails its FCS gets up to two more rounds with
+  each chain's channel re-estimated from its own decode, and a round counts
+  only if its FCS passes. The virtual stream keeps legacy symbol timing and
+  carriers, so HT frames gain little.
+  - **Paired noise injection** (25 strong 5 GHz frames, 2,025 trials):
+    `fd` SNR₅₀ 0.98 dB against `mrc`'s 1.79 (−0.81 dB [−1.14, −0.51]). The
+    union improves by 0.88 dB [0.67, 1.14].
+  - **Five 1 s both-chain 5 GHz recordings:** the union goes from 217 to 243
+    valid frames, and no frame is lost. A weak channel-36 AP went from 1 to
+    9 beacons a second.
+  - **Cost:** 44 to 87 s per 1 s recording for all four branches (single
+    thread, nice 19).
+  - **Only at 5 GHz.** On a busy 2.4 GHz channel-11 recording (with blanking
+    and HT traffic), `fd` alone decoded 223 frames to `mrc`'s 351. It added
+    4 to the union's 360 (lost none) for 61% more decode time (282 → 454 s),
+    so `--combine` runs it only on channels above 14.
 
 Wi-Fi scans now select the nominal **20 MHz analog/digital filter profile** by
 default; `--bandwidth 40000000` restores the wider profile. Both retain 40 MSps
@@ -352,7 +379,12 @@ copy does, and reject invalid slots and partial slot groups. Combining tests
 decode a weak DSSS frame that neither chain decodes alone, under correlated
 noise and a half-sample slot-1 delay, check the whitened weights against the
 analytic optimum, and check that the combined stream is the same in every
-window and leaves blanked samples zero.
+window and leaves blanked samples zero. The `fd` tests decode a weak OFDM
+beacon only `fd` decodes (its transmitter's echoes and one-sample chain lag
+differ from the strong frames' that set the combiner's delay). They check
+the per-subcarrier weights' unit noise and MRC optimum, and decode a clean
+frame through the virtual stream with independent per-chain channels, a
+chain-1 lag and a CFO.
 Real capture results are saved alongside their input recordings.
 
 On the existing one-second channel 1 recording, the original decoder found 27

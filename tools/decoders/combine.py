@@ -83,7 +83,7 @@ class Combiner:
         r00, r11, r01, live = self._block_stats(self.delay)
         info = {'delay_samples': self.delay, 'delay_bursts': self.delay_bursts,
                 'statistics_blocks': len(r00), 'live_blocks': int(live.sum())}
-        self.usable = False
+        self.usable, self.noise = False, None
         if live.sum() >= 10:
             tot = r00 + r11
             quiet = live & (tot <= np.percentile(tot[live], 20))
@@ -94,6 +94,7 @@ class Combiner:
                                     float(10 * np.log10(max(noise[1], 1e-30)))],
                      'noise_correlation': float(abs(noise[2]) / np.sqrt(max(noise[0] * noise[1], 1e-60)))}
             self.usable = bool(min(noise[0], noise[1]) > 1e-16 and det > 1e-6 * noise[0] * noise[1])
+            self.noise = noise
         if self.usable:
             w0, w1 = whitened_weights(_smooth(r00, HALF), _smooth(r11, HALF), _smooth(r01, HALF), noise)
             scale = np.sqrt(noise[0])
@@ -150,15 +151,21 @@ class Combiner:
                 table[i, j] = abs(np.vdot(a, c)) ** 2 / max(np.vdot(a, a).real * np.vdot(c, c).real, 1e-60)
         return float(DELAYS[int(np.argmax(np.median(table, 0)))]), len(runs)
 
-    def samples(self, start, count):
-        """Combined complex64 stream for [start, start + count); exact zeros where both slots are zero."""
+    def slots(self, start, count):
+        """Slot 0, slot 1 and slot 1 delayed by self.delay for [start, start + count)."""
         end = min(self.total, start + count)
         lo, hi = max(0, start - MARGIN), min(self.total, end + MARGIN)
         x0 = load(self.path, lo, hi - lo, self.dc_block, slot=0, of=2)
         x1 = load(self.path, lo, hi - lo, self.dc_block, slot=1, of=2)
         x1d = fractional_delay(x1, self.delay)
         a, b = start - lo, end - lo
-        x0, x1, x1d = x0[a:b], x1[a:b], x1d[a:b]
+        return x0[a:b], x1[a:b], x1d[a:b]
+
+    def samples(self, start, count, slots=None):
+        """Combined complex64 stream for [start, start + count); exact zeros where both slots are zero.
+        `slots` reuses this window's slots() output."""
+        x0, x1, x1d = slots if slots is not None else self.slots(start, count)
+        end = start + len(x0)
         if not self.usable:
             return x0
         t = np.arange(start, end, dtype=np.float64)

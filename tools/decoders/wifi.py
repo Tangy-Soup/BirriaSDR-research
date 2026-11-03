@@ -7,6 +7,7 @@ import struct
 
 from cs16 import load
 import combine as combine_mod
+import combine_fd
 import wifi_b
 import wifi_ofdm
 from wifi_advertisements import advertised_neighbors
@@ -108,7 +109,29 @@ def decode_window(x, center, channels, phy, threshold_db, min_us, stf_threshold,
     return packets, diagnostics
 
 
-BRANCHES = ('wf0', 'wf1', 'mrc')   # --combine: chain 0, chain 1, whitened combination
+def fd_streams(combiner, start, count):
+    """The fd branch's input for one window: slot 0, delayed slot 1 and the combined stream."""
+    x0, x1, x1d = combiner.slots(start, count)
+    return x0, x1d, combiner.samples(start, count, (x0, x1, x1d))
+
+
+def decode_window_fd(streams, center, channels, noise, stf_threshold):
+    """decode_window's OFDM part for the fd branch (combine_fd.decode_channel)."""
+    packets, diagnostics = [], []
+    for ch in channels:
+        if abs(wifi_b.channel_mhz(ch) - center) > 9:
+            raise ValueError(f'Channel {ch} is outside the reliable interior of this capture; retune to its center')
+        found, candidates = combine_fd.decode_channel(*streams, center, ch, noise, stf_threshold)
+        for p in found:
+            p['phy'] = 'OFDM'
+        packets.extend(found)
+        diagnostics.append({'channel': ch, 'phy': 'OFDM', 'stf_candidates': candidates,
+                            'valid_lsig_headers': sum(p.get('mpdu_index', 0) == 0 for p in found),
+                            'statuses': dict(Counter(p['status'] for p in found))})
+    return packets, diagnostics
+
+
+BRANCHES = ('wf0', 'wf1', 'mrc', 'fd')   # --combine: chain 0, chain 1, whitened combination, per subcarrier
 
 
 def merge_branches(packets):
@@ -149,9 +172,11 @@ def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_t
 
     combine=True reads a two-slot interleaved recording (birria_rx --chain both)
     and decodes three branches: chain 0, chain 1, and their noise-whitened
-    combination (combine.Combiner, one per channel). FCS-valid frames from any
-    branch count once (merge_branches); times and durations count per-slot
-    samples (40 MSps). It needs dc_block, since both-chain slots carry DC.
+    combination (combine.Combiner, one per channel). For OFDM on 5 GHz
+    channels a fourth branch, fd, combines the chains per subcarrier at the
+    combined stream's STF candidates (combine_fd). FCS-valid frames from any branch count once
+    (merge_branches); times and durations count per-slot samples (40 MSps). It
+    needs dc_block, since both-chain slots carry DC.
 
     of > 1 decodes one slot (`slot`, 0-based) of a recording whose I,Q pairs
     interleave `of` streams, without a split copy: birria_rx --chain both is
@@ -187,13 +212,20 @@ def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_t
                         ('wf1', channels, lambda: load(path, start, end - start, dc_block, slot=1, of=2))]
             branches += [('mrc', [ch], lambda ch=ch: combiners[ch].samples(start, end - start))
                          for ch in channels if combiners[ch].usable]
+            if phy in ('both', 'ofdm'):
+                # 5 GHz only: at 2.4 GHz blanking and HT traffic leave fd 1% more frames for 60% more time.
+                branches += [('fd', [ch], lambda ch=ch: fd_streams(combiners[ch], start, end - start))
+                             for ch in channels if combiners[ch].usable and ch > 14]
         else:
             branches = [(None, channels, lambda: load(path, start=start, count=end - start, dc_block=dc_block,
                                                        slot=slot, of=of))]
         for branch, decoded, read in branches:
             x = read()
-            found, details = decode_window(x, center, decoded, phy, threshold_db, min_us,
-                                           stf_threshold, dsss_sync_search, cck, recover)
+            if branch == 'fd':
+                found, details = decode_window_fd(x, center, decoded, combiners[decoded[0]].noise, stf_threshold)
+            else:
+                found, details = decode_window(x, center, decoded, phy, threshold_db, min_us,
+                                               stf_threshold, dsss_sync_search, cck, recover)
             for p in found:
                 anchor = p.get('sync_time_ms', p['time_ms']) * 40000 + start
                 if not core <= anchor < core_end:
@@ -216,10 +248,14 @@ def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_t
             del x
     branch_valid = {}
     if combine:
+        ran = {p['branch'] for p in packets} | {d['branch'] for d in diagnostics if 'branch' in d}
         for b in BRANCHES:
-            branch_valid[b] = sum(p['fcs_ok'] and p['branch'] == b for p in packets)
+            if b != 'fd' or 'fd' in ran:
+                branch_valid[b] = sum(p['fcs_ok'] and p['branch'] == b for p in packets)
         packets = merge_branches(packets)
         branch_valid['mrc_only'] = sum(p['fcs_ok'] and p['branches'] == ['mrc'] for p in packets)
+        if 'fd' in ran:
+            branch_valid['fd_only'] = sum(p['fcs_ok'] and p['branches'] == ['fd'] for p in packets)
     packets.sort(key=lambda p: (p['channel'], p['time_ms']))
     networks, serialized, neighbors, advertisement_errors = {}, [], {}, []
     for p in packets:
@@ -302,8 +338,8 @@ def main():
                     help='With --of N: the 0-based slot to decode (--chain both: 0 = chain 0, 1 = chain 1)')
     ap.add_argument('--combine', action='store_true',
                     help='The capture is a birria_rx --chain both recording: decode chain 0, chain 1 and their '
-                         'noise-whitened combination, and count each FCS-valid frame once '
-                         '(implies --dc-block 65536 unless given)')
+                         'noise-whitened combination (for 5 GHz OFDM also combined per subcarrier, branch fd), and count '
+                         'each FCS-valid frame once (implies --dc-block 65536 unless given)')
     ap.add_argument('--json', type=Path)
     ap.add_argument('--pcap', type=Path, help='Valid frames for Wireshark; relative timestamps, FCS retained')
     ap.add_argument('--packets', action='store_true', help='Also print each verified frame')

@@ -21,6 +21,7 @@ import wifi_ofdm as rx
 import wifi_b
 import wifi
 import combine
+import combine_fd
 import cs16
 import wifi_scan
 import wifi_benchmark
@@ -805,6 +806,84 @@ class CombineTests(unittest.TestCase):
             odd.write_bytes(path.read_bytes()[:-4])
             with self.assertRaises(ValueError):
                 wifi.analyze(odd, 2412, [1], phy='dsss', dc_block=65536, combine=True)
+
+
+def two_chain_ofdm(weak_amp, seed, h0=(1, 0, 0, .6j), h1=(0, 1, 0, 0, -.6)):
+    """--chain both slots at 5180 MHz: two strong 6 Mbps frames from a transmitter both
+    chains see alike, and between them a weak beacon from one whose path differs per
+    antenna (echoes h0 / h1 at 20 MSps, chain 1 one sample later). Unit noise per
+    slot (independent), 32 LSB per unit, and a static DC offset."""
+    norm = lambda w: w / np.sqrt(np.mean(np.abs(w) ** 2))
+    weak, frame = ofdm_wave(6)
+    strong = [norm(ofdm_wave(6, padding=n)[0]) for n in (8, 16)]
+    gap = np.zeros(10000)
+    rng = np.random.default_rng(seed)
+    slots = []
+    for h in (h0, h1):
+        w = np.convolve(weak_amp * norm(weak), h)[:len(weak)]
+        y = signal.resample_poly(np.r_[gap, 40 * strong[0], gap, w, gap, 40 * strong[1], gap], 2, 1)
+        y = y + (rng.normal(size=len(y)) + 1j * rng.normal(size=len(y))) / np.sqrt(2) + (-60 + 40j)
+        slots.append(32 * y)
+    return slots[0], slots[1], frame
+
+
+class FdCombineTests(unittest.TestCase):
+    """The fd branch: two chains combined per subcarrier (combine_fd)."""
+
+    def test_fd_branch_decodes_a_frame_the_broadband_combination_misses(self):
+        # The strong frames set the combiner's slot-1 delay to 0; the weak frame's
+        # own one-sample lag and echoes defeat one broadband weight pair.
+        x0, x1, frame = two_chain_ofdm(.6, 1)
+        with tempfile.TemporaryDirectory() as folder:
+            result, packets = wifi.analyze(write_interleaved(folder, x0, x1), 5180, [36], phy='ofdm',
+                                           dc_block=65536, combine=True)
+        valid = [p for p in packets if p['fcs_ok']]
+        weak = [p for p in valid if p['frame'] == frame]
+        self.assertEqual(len(weak), 1)
+        self.assertEqual(weak[0]['branches'], ['fd'])
+        self.assertEqual(weak[0]['fd_rounds'], 0)
+        self.assertTrue(all(p['branches'] == ['wf0', 'wf1', 'mrc', 'fd'] for p in valid if p['frame'] != frame))
+        self.assertEqual(result['combine']['channels']['36']['delay_samples'], 0)
+        self.assertEqual(result['combine']['branch_valid_frames'],
+                         {'wf0': 2, 'wf1': 2, 'mrc': 2, 'fd': 3, 'mrc_only': 0, 'fd_only': 1})
+        self.assertEqual(result['valid_frames'], 3)
+
+    def test_fd_branch_runs_only_on_5ghz_channels(self):
+        x0, x1, frame = two_chain_ofdm(.6, 1)
+        with tempfile.TemporaryDirectory() as folder:
+            result, packets = wifi.analyze(write_interleaved(folder, x0, x1), 2412, [1], phy='ofdm',
+                                           dc_block=65536, combine=True)
+        self.assertEqual(set(result['combine']['branch_valid_frames']), {'wf0', 'wf1', 'mrc', 'mrc_only'})
+        self.assertFalse(any('fd' in p.get('branches', []) for p in packets))
+
+    def test_subcarrier_weights_have_unit_noise_and_reach_the_optimum(self):
+        noise = (1.0, .5, .35 + .2j)
+        rn = np.array([[noise[0], noise[2]], [np.conj(noise[2]), noise[1]]])
+        h0, h1 = np.array([1, .3, .05j]), np.array([.5j, 1 - .4j, -.8])
+        w0, w1 = combine_fd.weights(h0, h1, noise)
+        for k in range(3):
+            w, h = np.array([w0[k], w1[k]]), np.array([h0[k], h1[k]])
+            self.assertAlmostEqual((np.conj(w) @ rn @ w).real, 1, places=9)
+            self.assertAlmostEqual(abs(np.conj(w) @ h) ** 2, (np.conj(h) @ np.linalg.solve(rn, h)).real, places=9)
+
+    def test_clean_frame_decodes_through_the_virtual_stream(self):
+        # Independent per-chain channels, a chain-1 lag and a CFO; the broadband
+        # stream is only used for timing, so chain 0 alone stands in for it.
+        wave, frame = ofdm_wave(6)
+        chains = []
+        for h in ((1, .3j, 0, -.2), (0, .8, 0, .5j, .3)):
+            y = np.r_[np.zeros(500), np.convolve(wave, h), np.zeros(500)]
+            y = y * np.exp(2j * np.pi * 60e3 * np.arange(len(y)) / rx.FS)
+            chains.append(y.astype(np.complex64))
+        rng = np.random.default_rng(4)
+        chains = [c + .003 * (rng.normal(size=len(c)) + 1j * rng.normal(size=len(c))).astype(np.complex64)
+                  for c in chains]
+        at, cfo = next(iter(rx.detect_stf(chains[0])))
+        p = combine_fd.decode_candidate(chains[0], chains[1], chains[0], at, cfo, (1e-5, 1e-5, 0j))
+        self.assertTrue(p['fcs_ok'])
+        self.assertEqual(p['frame'], frame)
+        self.assertAlmostEqual(p['cfo_hz'], 60e3, delta=2e3)
+        self.assertEqual(p['sample'], rx.decode_candidate(chains[0], at, cfo)['sample'])
 
 
 class SlotTests(unittest.TestCase):
