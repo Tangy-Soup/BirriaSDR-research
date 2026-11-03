@@ -97,7 +97,8 @@ signal was on air outside that, and every 20 MHz channel from 5955 to
 | Chain 0 has no sample blanking at 5 GHz, so packet-detect suppression has nothing to remove there. Chain 1 does blank at 5 GHz | Established | §9 |
 | Weak legacy OFDM frames: a smoothed, L-SIG-aided estimate, smoothed pilot phase, an FCS-gated re-estimate and a lower STF threshold recover about 2.5 dB | Established | §10 |
 | At 5 GHz chain 0 now reaches 50% of beacons about 2 dB short of the stock driver per chain, and about 4 dB short of its two-chain receiver (the first estimate was 15 dB) | Single run, same hour | §9 |
-| With both chains at LPF 14 and combining, the whole-receiver gap at 5 GHz is about 1.3 dB | Single run, not same hour | §9 |
+| With both chains at LPF 14 and combining, the whole receiver needs about 3.6 dB more signal than the stock driver's two-chain receiver at 5 GHz (an earlier cross-day estimate said 1.3 dB) | Single run, same hour | §9 |
+| Combining the two chains per subcarrier recovers about 0.9 dB of that on weak 5 GHz frames | Established on noise injection, single run live | §10 |
 
 ## 3. Sample blanking is the PHY packet detector
 
@@ -454,11 +455,18 @@ These are early and mostly single runs, made after upstream added 5 GHz.
   - **Two-chain combining decides some APs.** On channel 161 one pair of
     BSSIDs reads −95 dBm on chain 0 and −92 dBm on chain 1. The stock driver
     decodes 94% of their beacons and we, on chain 0 alone, decode none.
-  - **Both chains at LPF 14 close most of the rest.** Two-chain capture at
+  - **Both chains at LPF 14 help, but a gap remains.** Two-chain capture at
     LPF 14 on both chains, decoded with `--combine`, moved our 50% beacon
-    level from −90.7 dBm (chain 0 alone) to −94.6 dBm, against −95.7 dBm for
-    the stock driver: about 1.3 dB short as a whole receiver. That comparison
-    wasn't made in the same hour, and its upper bounds are loose.
+    level from −90.7 dBm (chain 0 alone) to −94.6 dBm. Against a stock fit
+    from another day (−95.7 dBm) that looked like 1.3 dB. A same-hour
+    sandwich (us, stock, us, the same antennas, 18 APs on channels 36, 48,
+    149 and 161) put our level at −94.3 dBm again. Stock decoded almost every
+    AP at 78% or better, so its own 50% level is an extrapolation (about
+    −98.8 dBm). With a shared slope, we need **3.6 dB [0.7, open] more
+    signal** than stock's two-chain receiver for the same beacon fraction.
+    The losses sit at APs we hear at −3 to +3 dB SNR on chain 0. On channel
+    161 we beat stock on every AP. The broadband combination behind
+    `--combine` was part of the loss (§10).
   - **Some APs decode worse than their SNR suggests.** Two APs at about
     4.4 dB L-LTF SNR decode only 9 to 13%, where another AP at 3.4 dB decodes
     76%. A stronger AP whose data symbols don't match its own L-LTF channel
@@ -563,6 +571,22 @@ correct frames with a measured false-accept rate of 1.46 × 10⁻⁶ (theory 1.9
 blanking was suppressed recovery added no networks. OFDM can't recover whole
 erased symbols either.
 
+**Two-chain combining per subcarrier** (established on noise injection,
+single run live). The `mrc` branch of `--combine` merges the chains in the
+time domain, with one weight pair per 10 µs block and one inter-chain delay
+per capture. At 5 GHz the two antennas fade independently across the band,
+and the delay between them depends on the transmitter: on one channel a
+weak AP's frames lagged by 1.8 samples on chain 1 and the other APs' by 0.2.
+Against ideal per-subcarrier combining that left about 1.5 dB of effective
+SNR on weak frames (2.9 dB on that channel). The `fd` branch combines the
+chains per subcarrier at each frame's own timing, from the per-chain L-LTF
+estimates. On paired noise injection (25 strong 5 GHz frames, 2,025 trials)
+it improves the combined union's 50% SNR by 0.88 dB [0.67, 1.14]. On five
+1 s two-chain recordings the union went from 217 to 243 valid frames with
+none lost, and one weak AP from 1 to 9 beacons a second. It runs only at
+5 GHz: on a busy 2.4 GHz channel it added 1% of frames for 61% more decode
+time.
+
 **Gap-free failures at high SNR** run at about 5% (5 of 101 test probes, 15 of
 257 long AP frames); only 4 of 20 had outlier carrier-offset estimates.
 
@@ -630,11 +654,11 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 ## 13. Open questions
 
 - Why the 20 MHz tap-12 edge alternates between two widths across captures.
-- The remaining 5 GHz gap of about 2 dB per chain: APs whose data symbols
-  don't match their L-LTF channel, and about 1.3 dB of floor still above
-  thermal. Chain 1 at filter-stage codes above 8 plus combining closed most
-  of the whole-receiver gap (§9). A same-hour comparison against the stock
-  driver is still to do.
+- The remaining 5 GHz gap: about 3.6 dB as a whole receiver in the same
+  hour (§9), less the 0.9 dB the per-subcarrier branch recovers (§10), not
+  yet re-measured against stock with that branch. Per chain, APs whose data
+  symbols don't match their L-LTF channel, and about 1.3 dB of floor still
+  above thermal.
 - HT frames at MCS 5–7 that still fail on SNR, and whether two-chain
   combining recovers them now that chain 1 is level with chain 0.
 - Chain 1's dB gain steps with bit 17 set.
