@@ -137,7 +137,7 @@ upstream `main` at `8ddab14`, as each project documents it:
 | Base | Upstream `cbe0575` (25 October 2026), not rebased | `8ddab14` (30 October 2026) |
 | Sample rates | 40 MSps, plus 20 MSps from a 2:1 halfband filter on the host, flat to ±8.5 MHz, with unchanged USB traffic. The 80 MSps rate is experimental and 2.4 GHz only | 10, 20, 40 and 80 MSps from the device. At 10 and 20 MSps the chip packs samples from a faster tap, and 10 MSps halves the USB traffic |
 | Receive chains | Chain 0, chain 1, or both interleaved | Chain 0 |
-| Gain | Raw codes, with filter stage 0 to 15 at 5 GHz, or an overall gain from measured relative dB tables | Raw codes, filter stage 0 to 8. Not in dB |
+| Gain | Raw codes, with filter stage 0 to 15 at 5 GHz, or an overall gain from measured relative dB tables. The Soapy module's automatic mode runs a slow host gain loop | Raw codes, filter stage 0 to 8. Not in dB |
 | Capture blanking | `--pd-n8` removes the zero runs | Not documented |
 | Channel-filtered tap | `--channel-filter` | No. The 10 MSps rate uses a narrower digital filter |
 | SoapySDR module | `driver=birriasdr`, opt-in build flag. Sample-count timestamps, 20 or 40 MHz bandwidth, and settings for blanking suppression, the channel-filtered tap and the restart budget | `driver=birria`, built whenever SoapySDR is installed. All four native rates, with rate changes while streaming. No timestamps or bandwidth control |
@@ -279,8 +279,8 @@ cannot be combined with `--buffered`, whose finite reads stay strict. At
 `--rate 20000000`.
 
 Streamed recordings keep disk I/O off the read thread: the callback copies into
-a preallocated RAM ring and a writer thread converts and writes. `--ring MiB`
-sets the ring size; the default holds four seconds of the stream (640 MiB at
+a preallocated RAM ring and a writer thread converts and writes. The `--ring MiB`
+option sets the ring size. The default holds four seconds of the stream (640 MiB at
 40 MSps, 1280 MiB at 80 MSps), or the whole recording if that's shorter. A disk
 slower than the stream eventually fills the ring. The callback then waits, and
 the resulting overrun stops the recording, or is logged as a gap with
@@ -570,8 +570,8 @@ directory.
 | Sample rate | 40 MSps, or 20 MSps through the library's 2:1 halfband (flat to ±8.5 MHz). 20 MSps is single-chain only. Experimental 80 MSps, single chain; `getBandwidth` then reports the 80 MHz profile |
 | Frequency | One `RF` component, retuned live, including across bands. `getFrequencyRange` lists each band separately (2156 or 2190 to 2610 MHz, and 4500 to 6200 MHz on MT7921). A request outside every band, including the gap between them, is logged and leaves the tuner where it was. 80 MSps is refused at 5 GHz |
 | Bandwidth | 20 or 40 MHz, rounded to the nearer one. A change during a stream applies at the next stream start |
-| Gain mode | Automatic runs a slow host loop: it starts at the top analog step, drops at least 6 dB when more than 0.1% of I and Q values clip over 2 s, and rises only after 30 s with headroom to spare. Manual applies the cached codes. The `auto_gain` setting set to `released` restores the older behaviour, where the chip sets the gain. The loop holds forced codes, so an application killed mid-stream leaves them behind, and the dongle then needs a replug; manual mode has the same limit, released mode does not |
-| Gain elements | `LNA` 0 to 5, `LPF` 0 to 8 (0 to 15 at 5 GHz, following the tuned band) and `DIG` 0 to 12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode; while the host loop runs, reads report the codes it holds |
+| Gain mode | Automatic runs a slow host loop: it starts at the top analog step, drops at least 6 dB when more than 0.1% of I and Q values clip over 2 s, and rises only after 30 s with headroom to spare. Manual applies the cached codes. The `auto_gain` setting set to `released` restores the older behaviour, where the chip sets the gain. The loop holds forced codes, so an application killed mid-stream leaves them behind, and the dongle then needs a replug. Manual mode has the same limit, released mode does not |
+| Gain elements | `LNA` 0 to 5, `LPF` 0 to 8 (0 to 15 at 5 GHz, following the tuned band) and `DIG` 0 to 12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode. While the host loop runs, reads report the codes it holds |
 | Overall gain | The library's measured relative dB table, from 0 to 45.8 dB on chain 0 (0 to 59.2 dB at 5 GHz). A value picks the nearest step's codes, and a value set in automatic mode applies at the next manual mode. While the host loop runs, reads report the gain it holds |
 | Antenna | `RX` only |
 | Settings | `auto_gain` (`host` or `released`, default `host`: what automatic gain mode does), `packet_detect_suppression` (applies at the next stream start; discard about the first 250 ms), `channel_filter` (capture after the digital channel filter; applies at the next stream start) and `max_restarts` (recovery budget, default 16) |

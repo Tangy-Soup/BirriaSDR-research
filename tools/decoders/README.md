@@ -225,6 +225,18 @@ in the first data symbols of most frames. On seven both-chain recordings
 that spike cost 72 frames net (1528 → 1600 with it removed). It is off by
 default; single-chain captures have almost no DC.
 
+Single-chain 2.4 GHz captures do carry a flat raw DC offset for about 20 samples
+after each blanking run. The `cs16.load` function measures that profile once per file, gated on
+enough runs and a 5-sigma step, and subtracts it. On twelve paired captures that was
+about +2.4% frames. The `wifi.py --no-edge-repair` option gives the old decoder's frames, which
+is what a comparison with older counts needs.
+
+The `csi_export.py capture.cs16 decode.json out.jsonl` command turns a `wifi.py --json` decode into
+per-packet channel estimates on the 52 legacy subcarriers, as versioned JSON Lines. It
+never changes what was decoded, and records for frames that failed the FCS carry no
+address. The values aren't calibrated, and two-chain mode has only been tested on
+synthetic data.
+
 **Both-chain recordings** (`birria_rx --chain both`) interleave two receivers
 pair by pair: even I,Q pairs are chain 0 (WF0), odd pairs chain 1 (WF1), each
 at 40 MSps. No split copy is needed:

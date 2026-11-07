@@ -88,8 +88,11 @@ signal was on air outside that, and every 20 MHz channel from 5955 to
 | Chain 1 needs `0x1e4` bit 17: it is deaf at 5 GHz without it and level with chain 0 with it | Single run | §6 |
 | Two-chain whitened combining adds frames but no new networks | Established | §6 |
 | LNA codes 4 and 5 exist and help; measured gain table in dB | Established | §7 |
+| Chain 0's 2.4 GHz table differs from its October measurement, for an unknown reason. Today's table fits a second unit, other channels and 80 MSps | Established, cause open | §7 |
+| Released gain is nearly deaf at 5 GHz, so the Soapy module's automatic mode now runs a slow host gain loop | Established on chain 0 | §7 |
 | 80 MSps works over usbipd with the Mtk79ICAP 2.4 GHz BW80 recipe | Established | §8 |
 | Host USB queue depth, not USB aggregation, sets the gap rate | Established | §8 |
+| A writer thread with a RAM ring takes 80 MSps recording to disk from over 1,000 gaps in 30 s to single digits | Single comparison | §8 |
 | The 2.4 GHz synthesizer calibrates from 2171 to 2652 MHz on this unit. The high VCO range calibrates beyond that but receives nothing under any LO-path value. The 5 GHz path calibrates from 4250 to 6273 MHz, but reception is checked from 5180 to 5815 MHz only | Established | §1, §12 |
 | Most OFDM `bad_service` failures are 802.11n HT-mixed frames, not blanking | Established | §10 |
 | Per-symbol pilot slope fitting loses weak OFDM frames | Established | §10 |
@@ -191,6 +194,11 @@ the USB shells and the RP-SMA base:
 At 5 GHz the floor was already the receiver's own, so there was nothing to
 remove. No narrowband spurs stood out on any channel.
 
+**A caveat on the 2.4 GHz numbers.** The gain table changed some time between
+24 October and 4 November (§7), and this scan, on 27 October, falls in that
+window. Part of the 2.4 GHz floor drop may be lower gain rather than less noise.
+The raw captures are gone, so the split can't be recovered.
+
 **Antenna B** (single run). With B pointing straight out, nearly horizontal and
 opposite A, the in-band noise correlation between the two chains fell from
 |ρ| 0.48–0.55 to 0.10–0.15, and both floors dropped 1–5 dB. Most of the
@@ -282,7 +290,12 @@ plain correction: the receiver brings the whole raw sample back on a ramp
 there leaves a spike of about minus the offset (~300 LSB on chain 0) in the
 first data symbol of most frames. Zeroing those samples, as `--dc-block`
 now does, took seven both-chain recordings from 1528 to 1600 frames over
-all `--combine` branches (+113, −41; chain 0 alone 1362 → 1430). An earlier "chain 1 decodes 1.57× chain 0" result was
+all `--combine` branches (+113, −41; chain 0 alone 1362 → 1430). Single-chain
+2.4 GHz captures have a related effect: a flat raw DC offset for about 20 samples after
+each blanking run. The decoder now measures it once per file and subtracts it, since
+the signal underneath is intact. Over twelve paired 2437 MHz captures that was about
++2.4% (+87, −27 frames), up or equal in every file. One other file gained 28% on OFDM,
+and we don't know why the two differ. The `--no-edge-repair` option restores the old frames. An earlier "chain 1 decodes 1.57× chain 0" result was
 this DC offset and is withdrawn: with DC removed, chain 0 decoded 277 frames,
 chain 1 276, and the union 279.
 
@@ -318,25 +331,53 @@ beacons. A 33-run survey of channels 1–11 found no further networks.
 mirror (RF `0x268`: LNA `[23:21]`, LPF `[20:17]`) showed chain 1 sitting at
 LNA 5 / LPF 7 when nothing forces it. So "3/8 is the maximum" is wrong.
 
-**Measured gain table, chain 0, 2.4 GHz** (established; one steady AP, live
-sweeps inside one stream, 0 overruns). Relative to LNA 0 / LPF 0 / digital 0:
+**Measured gain table, chain 0, 2.4 GHz** (established, from live sweeps inside one
+stream, 0 overruns, seven runs on 5 November, 0.20 dB rms). Relative to
+LNA 0 / LPF 0 / digital 0:
 
 | Stage | Codes → dB |
 | --- | --- |
-| LNA | 0 → 0, 1 → 8.1, 2 → 13.8, 3 → 19.6, 4 → 25.8, 5 → 31.8 (6 and 7 behave like 5) |
-| LPF | 0 → 0, then 2.1, 4.0, 5.9, 8.0, 9.7, 11.7, 13.9, 15.6 for codes 1–8 |
-| Digital | 1.0 dB per code |
+| LNA | 0 → 0, 1 → 6.0, 2 → 12.1, 3 → 20.4, 4 → 23.9, 5 → 29.8 |
+| LPF | Codes 0 to 6 flat within 0.3 dB, then 2.0 and 4.0 for codes 7 and 8 |
+| Digital | 1.0 dB per code, odd codes included |
 
-- The stages are separable to within 0.36 dB rms.
-- SNR follows LNA about 1:1, saturates at LNA 5, and LPF stops helping above
-  about 6. Digital gain adds no SNR. Fill LNA, then LPF, then digital.
-- LNA 5 with LPF 7 or 8 gave +5.2 dB SNR over the shipped 3/4/0 and +2.3 dB
-  over 3/8/0. From LNA 2 / LPF 0, LNA 5 / LPF 7 is 31.8 dB, which matches
-  Mtk79ICAP's 32 dB 5 GHz model.
-- **Chain 1:** LNA and digital steps match chain 0 within about 1 dB; its LPF
-  steps are smaller (0 → 8 spans 11.0 dB against 15.6 dB). These were
-  measured before chain 1's receive word gained bit 17 (§6) and haven't been
-  remeasured.
+**Where it was checked.** The second EP-AX1672 took seven runs at 2437 MHz, on its
+own antennas and in another position (0.13 dB rms). The other checks were 2462 MHz
+on a different BSS, 2412 MHz on a third, weak AP, and 80 MSps at 2437 MHz. The codes
+checked agree within 0.5 dB, except LNA 4 at 2412 MHz (0.7 dB) and LNA 0 on the
+second unit (1 dB). At 2412 MHz, LNA 3 and below couldn't be scored.
+
+**The table moved, and the cause is open.** On 23 and 24 October the same method
+gave LNA 0, 8.1, 13.8, 19.6, 25.8, 31.8 and LPF 0, 2.1, 4.0, 5.9, 8.0, 9.7, 11.7,
+13.9, 15.6. What we can say:
+
+- **Not the library.** A statically linked binary from 24 October reads today's
+  values. It read the steep values on the day it was built, and it reads no
+  firmware file, config file or environment variable.
+- **Not leftover chip state.** It reads today's values as the first program after
+  a replug.
+- **Not specific to forced codes.** Released gain moved too, from 22.2 to 15.6 dB
+  above LNA 3 / LPF 4.
+- **Not one unit drifting, as far as we can tell.** The second unit matches today's
+  table, but it has no October measurement.
+- **The new shape is 5 GHz's shape,** which was already flat at low LPF on
+  28 October.
+
+The last steep sweep was 24 October and the first flat one 4 November, with no LPF
+sweep at 2.4 GHz in between. So read the SNR results below as measured on the
+October table unless they say otherwise.
+
+- The stages are separable, within 0.20 dB rms now and 0.36 dB rms in October.
+- SNR follows LNA about 1:1, saturates at LNA 5, and in October LPF stopped helping
+  above about 6. Digital gain adds no SNR. Fill LNA, then LPF, then digital.
+- In October LNA 5 with LPF 7 or 8 gave +5.2 dB SNR over the shipped 3/4/0 and
+  +2.3 dB over 3/8/0. In November LNA 5 / LPF 7 read 2.2 dB over 3/8/0 on one strong AP,
+  whether the gain was set before the stream started or changed during it.
+- **Chain 1** (seven runs on 4 November, with bit 17): LNA 0, 7.7, 13.9, 22.3, 25.9,
+  32.1 and LPF flat within 0.7 dB for codes 0 to 6, then 2.4 and 4.4 for codes 7
+  and 8. On this chain LNA 0 was too weak to measure, so its step to LNA 1 is the
+  earlier value. Chain 0's table moved the same way with no change to its receive
+  word, so bit 17 probably isn't the reason, as we first wrote.
 - **Both-chain mode** taps come before digital gain, so digital codes do
   nothing there.
 - **Released (unforced) gain:** chain 1 sits at a fixed LNA 5 / LPF 7 plus
@@ -349,10 +390,37 @@ sweeps inside one stream, 0 overruns). Relative to LNA 0 / LPF 0 / digital 0:
 The gain to measure against is a steady transmitter's frames, not the noise
 floor: the floor is measured after the gain, so it can't measure the gain.
 
+**Which gain to use** (ABBA, FCS-valid frames per 1.95 s capture). Traffic varied
+about 5-fold between runs of one arm, so small differences mean little.
+
+| Frequency | Released | LNA 5 / LPF 8 | LNA 5 / LPF 14 |
+| --- | --- | --- | --- |
+| 5240 MHz | 9 | 16 | 82 |
+| 5180 MHz | 0 | 5.5 | 49 |
+| 5745 MHz | 32 | 169 | 400 |
+
+At 2437 MHz, LNA 5 / LPF 7 gave 265, released 253 and LNA 3 / LPF 8 gave 202, with
+27, 11 and 1 of 114 beacons from a weak AP. At 5 GHz LPF 13 and 14 didn't differ
+(105 against 100 frames in 12 captures). The top codes cost a strong AP SNR at
+5745 MHz, about 33 dB at LPF 8 against 21 to 25 dB at LPF 13 or 14, but its beacons
+still all decoded. So record with LNA 5 and LPF 7 or 8 at 2.4 GHz, and LNA 5 and
+LPF 14 at 5 GHz. The `birria_rx` tool stays released unless given `--gain`.
+
+**A host gain loop for automatic mode** (established on chain 0). The Soapy module's
+automatic mode now holds the top analog step and backs off only for real clipping:
+more than 0.1% of I and Q values at full scale over 2 s drops at least 6 dB, and a
+rise needs 30 s and leaves 3 dB of headroom. Over 12 minutes per mode at 2437 and
+5745 MHz it made no changes, cost about 0.01 of a core, and had similar device gaps
+(2 and 8 against 0 and 10 for fixed codes). Recall matched fixed codes at the same
+step. With the threshold lowered to force changes, it dropped from 47.2 to 39.9 dB
+with no gap, held for 237 s without hunting, and climbed back after a retune to a
+quiet channel. The loop holds forced codes, so an application killed mid-stream
+leaves them behind until a replug, which manual mode already did and released mode
+doesn't. Chain 1, both-chain, a killed application and GUI use are untested.
+
 Implemented as per-chain dB tables (`birriasdr_set_tuner_gain()`,
 `BIRRIASDR_CAP_GAIN_DB`, Soapy overall gain); see
-[mt7921.md](mt7921.md#gain-in-db). The 2.4 GHz tables come from one AP at
-2437 MHz. At 5 GHz each chain has its own table from live sweeps at 5240 to
+[mt7921.md](mt7921.md#gain-in-db). At 5 GHz each chain has its own table from live sweeps at 5240 to
 5785 MHz, where filter-stage codes 9 to 15 are allowed on every chain and
 2.4 GHz stays at 0 to 8 (§9).
 
@@ -391,8 +459,14 @@ neutral, and 128 KiB is worse. Linux's default 16 MB usbfs limit refuses 256 ×
 **Recording to disk at 80 MSps** (single run). `birria_rx --recover` writes
 across gaps and logs them. 40 MSps for 30 s to disk had 0 gaps. 80 MSps to
 disk rose from 0–3 to 50–85 gaps/s after about 20 s as page-cache writeback
-began; into RAM it was about 0.9/s. A writer thread with a RAM ring would be
-the fix.
+began; into RAM it was about 0.9/s.
+
+**A writer thread fixes most of that** (single comparison). With a thread and a RAM
+ring, 30 s at 80 MSps to disk had 2 and 6 gaps, alternating with the old writer's
+1,466 and 1,172. A 15 s run at 40 MSps had none. At least some of the remaining gaps are
+device-side: one overrun came with the USB queue at 45 of 512. A strict 80 MSps
+recording still ends at an overrun now and then, so long ones need `--recover`.
+Moving the I/Q decode inline also cut it from 4,816 to 1,105 ns per packet.
 
 **20 MSps.** A 47-tap host halfband (flat to 8.5 MHz, −57.8 dB from 11.5 MHz)
 gave no measurable aliasing. The alternative that keeps one ICAP word in four
@@ -661,12 +735,12 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
   above thermal.
 - HT frames at MCS 5–7 that still fail on SNR, and whether two-chain
   combining recovers them now that chain 1 is level with chain 0.
-- Chain 1's dB gain steps with bit 17 set.
+- Why the 2.4 GHz gain table differs from October (§7), and whether it can be
+  changed back, since that would restore about 12 dB of LPF range.
 - Two never-decoded 2.4 GHz APs that are still visible at −4 to −8 dB SNR on
   chain 0.
 - Whether the packet-detect, chain-select and gain-table results hold on the
-  COMFAST board and on other EDUP units.
-- A writer thread for gap-free 80 MSps recording to disk.
+  COMFAST board. A second EP-AX1672 matches the gain table.
 - Whether VCO trim fields can push the 2.4 GHz edge above 2652 MHz.
 
 ## 14. Credits
