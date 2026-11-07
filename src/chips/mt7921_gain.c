@@ -68,8 +68,8 @@
  * an absolute RF gain. Each stage was measured on one chain at a time at
  * 2437 MHz and 40 MSps, as the level change of one AP's beacons against
  * reference dwells in one live-sweep stream. The stages add within 0.2 dB rms
- * (chain 0) and 0.36 dB rms (chain 1). Digital gain measured 1.0 dB per even
- * code; odd codes assume the same step. The both-chain taps come before the
+ * (chain 0) and 0.36 dB rms (chain 1). Digital gain measured 1.0 dB per code,
+ * odd codes on chain 0 only. The both-chain taps come before the
  * digital stage, so there digital adds nothing and chain 0's analog values
  * apply. On both chains LPF 0..6 are flat and only 7 and 8 add gain, as at
  * 5 GHz, so the LPF steps are ordered and skipped like the 5 GHz ones.
