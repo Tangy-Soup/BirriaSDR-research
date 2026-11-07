@@ -33,6 +33,86 @@ static void make_frame(uint8_t frame[BS_FRAME_BYTES], uint32_t sequence)
     bs_put_le32(frame + BS_FRAME_BYTES - 4, 0xffffffff); /* Trailer is not I/Q. */
 }
 
+/* Payload bytes reach the consumer the same way, however USB split the stream. */
+static int checksum_payload(void *context, const uint8_t *raw)
+{
+    uint64_t *sum = context;
+    for (size_t i = 0; i < BS_PAYLOAD_BYTES; i += 97)
+        *sum = *sum * 31 + raw[i];
+    return 0;
+}
+
+static int checksum_gap(void *context, uint32_t state, uint64_t packets)
+{
+    uint64_t *sum = context;
+    *sum = *sum * 1000003 + state + packets;
+    return 0;
+}
+
+/* An ACK, two data events, a gap marker and a data event, cut at two points. The
+ * in-place path must match byte-at-a-time assembly in result, order and state,
+ * including when one event is corrupt. Every first cut, a spread of second cuts.
+ */
+static void test_framing_equivalence(void)
+{
+    enum { TOTAL = 40 + BS_FRAME_BYTES * 3 + 48 };
+    static uint8_t stream[TOTAL];
+    uint8_t *at = stream;
+    bs_put_le32(at, 0x38000000u | 36);
+    at[28] = 1;
+    at += 40;
+    for (unsigned sequence = 0; sequence < 2; ++sequence, at += BS_FRAME_BYTES) {
+        make_frame(at, sequence);
+        for (unsigned i = 44; i < BS_FRAME_BYTES - 4; ++i)
+            at[i] = (uint8_t)(i * (sequence + 3));
+    }
+    bs_put_le32(at, 0x3800002c);
+    bs_put_le32(at + 8, 9);
+    bs_put_le32(at + 12, 1);
+    bs_put_le32(at + 24, 0x38000014);
+    at[28] = 0xed;
+    at[32] = 0xf6;
+    bs_put_le32(at + 36, 2);
+    bs_put_le32(at + 40, 0x12345678);
+    at += 48;
+    make_frame(at, 2);
+    /* Corruption: none, data sequence, data nonce, marker count, RXD0 of the last event. */
+    const size_t flip[] = {0, 40 + 36, 40 + BS_FRAME_BYTES + 40, 40 + 2 * BS_FRAME_BYTES + 12,
+                           40 + 2 * BS_FRAME_BYTES + 48 + 3};
+    for (unsigned c = 0; c < sizeof(flip) / sizeof(flip[0]); ++c) {
+        uint64_t reference_sum = 0;
+        struct bs_framer reference = {.nonce = 0x12345678, .payload = checksum_payload,
+                                      .gap = checksum_gap, .context = &reference_sum};
+        int reference_result = 0;
+        if (c)
+            stream[flip[c]] ^= 0x10;
+        for (size_t i = 0; i < TOTAL && !reference_result; ++i)
+            reference_result = bs_framer_feed(&reference, stream + i, 1);
+        CHECK(!c == !reference_result);
+        CHECK(c || bs_framer_finish(&reference, 3) == 0);
+        for (size_t first = 0; first <= TOTAL; first += first < 64 ? 1 : 37) {
+            const size_t second = first + (first * 7919 + 13) % (TOTAL - first + 1);
+            const size_t cut[] = {first, second, TOTAL};
+            uint64_t sum = 0;
+            struct bs_framer f = {.nonce = 0x12345678, .payload = checksum_payload,
+                                  .gap = checksum_gap, .context = &sum};
+            int result = 0;
+            size_t from = 0;
+            for (unsigned n = 0; n < 3 && !result; from = cut[n++])
+                result = bs_framer_feed(&f, stream + from, cut[n] - from);
+            CHECK(result == reference_result && sum == reference_sum);
+            CHECK(f.packets == reference.packets && f.gaps == reference.gaps);
+            /* A failed event stays pending, so finishing or feeding again still fails. */
+            if (result) {
+                CHECK(f.used && bs_framer_finish(&f, f.packets) == BIRRIASDR_ERROR_PROTOCOL);
+                CHECK(bs_framer_feed(&f, stream, 1) == result);
+            }
+        }
+        if (c)
+            stream[flip[c]] ^= 0x10;
+    }
+}
+
 /* Every split point must produce exactly one packet, including bytewise headers.
  * Then verify gaps, stale nonces, duplicates, truncation and malformed lengths.
  */
@@ -501,6 +581,7 @@ static void test_api(void)
 int main(void)
 {
     test_framing();
+    test_framing_equivalence();
     test_gap_events();
     test_samples();
     test_events();

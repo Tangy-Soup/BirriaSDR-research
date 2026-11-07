@@ -55,9 +55,8 @@
  * runs. The final USB trailer is outside the I/Q payload and may contain SRAM
  * data, so its value is deliberately not interpreted as another sample.
  */
-static int consume_frame(struct bs_framer *framer, size_t length)
+static int consume_frame(struct bs_framer *framer, const uint8_t *frame, size_t length)
 {
-    const uint8_t *frame = framer->pending;
     if (length == 40) {
         if (frame[28] != 1 || frame[32] || framer->acknowledgements++)
             return BIRRIASDR_ERROR_PROTOCOL;
@@ -89,11 +88,30 @@ static int consume_frame(struct bs_framer *framer, size_t length)
 /* USB transfer boundaries are unrelated to DMA event boundaries. Assemble at
  * most one bounded frame, supporting every split point and aggregated events.
  * Invalid headers fail immediately instead of scanning ahead and hiding loss.
+ * An event that arrives whole with nothing pending is consumed in place, the
+ * common case, which saves copying its payload. A failure then leaves the same
+ * state as assembling it would have, so errors stay sticky either way.
  */
 int bs_framer_feed(struct bs_framer *framer, const uint8_t *data, size_t length)
 {
     while (length) {
         size_t target = 4, copy;
+        if (!framer->used && length >= 4) {
+            uint32_t word = bs_get_le32(data);
+            size_t size = word & 0xffff;
+            if (word >> 27 == 7 && (size == 36 || size == 44 || size == BS_FRAME_BYTES - 4) &&
+                length >= size + 4) {
+                int result = consume_frame(framer, data, size + 4);
+                if (result) {
+                    memcpy(framer->pending, data, size + 4);
+                    framer->used = size + 4;
+                    return result;
+                }
+                data += size + 4;
+                length -= size + 4;
+                continue;
+            }
+        }
         if (framer->used >= 4) {
             uint32_t word = bs_get_le32(framer->pending);
             uint32_t size = word & 0xffff;
@@ -109,7 +127,7 @@ int bs_framer_feed(struct bs_framer *framer, const uint8_t *data, size_t length)
         data += copy;
         length -= copy;
         if (framer->used == target && target != 4) {
-            BS_TRY(consume_frame(framer, target));
+            BS_TRY(consume_frame(framer, framer->pending, target));
             framer->used = 0;
         }
     }
@@ -124,17 +142,26 @@ int bs_framer_finish(const struct bs_framer *framer, uint64_t expected)
     return framer->used || framer->packets != expected ? BIRRIASDR_ERROR_PROTOCOL : 0;
 }
 
+static inline uint32_t load_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
 /* Raw SRAM is little-endian Q then I, 14-bit two's-complement in 16-bit slots.
  * Sign-extend and reorder to conventional native-endian I,Q without rescaling.
  * Validate the entire packet before making any part of it visible to a caller.
  */
 int bs_decode_iq(const uint8_t *raw, int16_t *iq, size_t samples)
 {
+    uint32_t reserved = 0;
+    /* These loops run for every sample, so they read words directly instead of
+     * calling bs_get_le32 in another translation unit. */
     for (size_t n = 0; n < samples; ++n)
-        if (bs_get_le32(raw + n * 4) & 0xc000c000u)
-            return BIRRIASDR_ERROR_PROTOCOL;
+        reserved |= load_le32(raw + n * 4);
+    if (reserved & 0xc000c000u)
+        return BIRRIASDR_ERROR_PROTOCOL;
     for (size_t n = 0; n < samples; ++n) {
-        uint32_t word = bs_get_le32(raw + n * 4);
+        uint32_t word = load_le32(raw + n * 4);
         iq[n * 2] = (int16_t)((int32_t)(((word >> 16) & 0x3fff) ^ 0x2000) - 0x2000);
         iq[n * 2 + 1] = (int16_t)((int32_t)((word & 0x3fff) ^ 0x2000) - 0x2000);
     }
