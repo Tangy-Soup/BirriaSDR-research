@@ -117,7 +117,7 @@ For more detail, see:
 | Transmit | None, receive only |
 | Gain | Raw codes for LNA 0 to 5, filter stage 0 to 8 (0 to 15 at 5 GHz) and digital 0 to 12 on each streamed chain, or an overall gain from a measured table of relative dB (0 to 45.8 dB on chain 0 at 2437 MHz, and at 5 GHz 0 to 59.2 dB on chain 0, 0 to 55.1 dB on chain 1 and 0 to 47.2 dB on both chains). The tables were measured on the EDUP board and have no absolute dBm reference. At 5 GHz, weak signals need LNA 5 and a filter-stage code of 11 to 14, but strong APs clip at the top codes. See [gain in dB](docs/mt7921.md#gain-in-db) and [5 GHz filter-stage codes](docs/mt7921.md#5-ghz-filter-stage-codes) |
 | Live gain changes | Supported without restarting capture, with a brief settling transient |
-| Automatic gain | Manual overrides can be released. Full AGC control is not implemented |
+| Automatic gain | The library can release the manual overrides to the chip. The SoapySDR module's automatic mode runs a slow host loop instead (see [SoapySDR module](#soapysdr-module)) |
 | Capture blanking | The PHY packet detector blanks short zero runs into the capture. Opt-in packet-detect suppression (`--pd-n8`) removes them after about 250 ms of settling. Research setting, see [packet-detect suppression](docs/mt7921.md#packet-detect-suppression) |
 | Frequency accuracy | Uncalibrated, with no ppm correction |
 | Reference clock | On-board 40 MHz crystal |
@@ -570,11 +570,11 @@ directory.
 | Sample rate | 40 MSps, or 20 MSps through the library's 2:1 halfband (flat to ±8.5 MHz). 20 MSps is single-chain only. Experimental 80 MSps, single chain; `getBandwidth` then reports the 80 MHz profile |
 | Frequency | One `RF` component, retuned live, including across bands. `getFrequencyRange` lists each band separately (2156 or 2190 to 2610 MHz, and 4500 to 6200 MHz on MT7921). A request outside every band, including the gap between them, is logged and leaves the tuner where it was. 80 MSps is refused at 5 GHz |
 | Bandwidth | 20 or 40 MHz, rounded to the nearer one. A change during a stream applies at the next stream start |
-| Gain mode | Automatic releases the manual overrides; manual applies the cached codes |
-| Gain elements | `LNA` 0 to 5, `LPF` 0 to 8 (0 to 15 at 5 GHz, following the tuned band) and `DIG` 0 to 12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode |
-| Overall gain | The library's measured relative dB table, from 0 to 45.8 dB on chain 0 (0 to 59.2 dB at 5 GHz). A value picks the nearest step's codes, and a value set in automatic mode applies at the next manual mode |
+| Gain mode | Automatic runs a slow host loop: it starts at the top analog step, drops at least 6 dB when more than 0.1% of I and Q values clip over 2 s, and rises only after 30 s with headroom to spare. Manual applies the cached codes. The `auto_gain` setting set to `released` restores the older behaviour, where the chip sets the gain. The loop holds forced codes, so an application killed mid-stream leaves them behind, and the dongle then needs a replug; manual mode has the same limit, released mode does not |
+| Gain elements | `LNA` 0 to 5, `LPF` 0 to 8 (0 to 15 at 5 GHz, following the tuned band) and `DIG` 0 to 12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode; while the host loop runs, reads report the codes it holds |
+| Overall gain | The library's measured relative dB table, from 0 to 45.8 dB on chain 0 (0 to 59.2 dB at 5 GHz). A value picks the nearest step's codes, and a value set in automatic mode applies at the next manual mode. While the host loop runs, reads report the gain it holds |
 | Antenna | `RX` only |
-| Settings | `packet_detect_suppression` (applies at the next stream start; discard about the first 250 ms), `channel_filter` (capture after the digital channel filter; applies at the next stream start) and `max_restarts` (recovery budget, default 16) |
+| Settings | `auto_gain` (`host` or `released`, default `host`: what automatic gain mode does), `packet_detect_suppression` (applies at the next stream start; discard about the first 250 ms), `channel_filter` (capture after the digital channel filter; applies at the next stream start) and `max_restarts` (recovery budget, default 16) |
 | Timestamps | `readStream` sets `SOAPY_SDR_HAS_TIME`. `timeNs` counts samples since activation at the nominal rate; across a gap it adds the lost interval measured on the host clock (about 1 ms uncertainty). It labels samples; it is not a hardware clock |
 | Stream arguments | `bufflen` (complex samples per USB buffer, default 65536), `buffers` (host ring depth, default 64) and `transfers` (queued USB transfers, default 192, or 256 on macOS; on Linux the total must fit usbcore's `usbfs_memory_mb`, 16 MB by default) |
 

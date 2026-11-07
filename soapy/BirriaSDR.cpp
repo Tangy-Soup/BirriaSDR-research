@@ -4,6 +4,7 @@
  * library's measured overall gain in dB, no DSP beyond its optional 2:1
  * decimation.
  */
+#include "HostAgc.hpp"
 #include "bands.hpp"
 #include "birriasdr.h"
 #include <SoapySDR/Device.hpp>
@@ -31,6 +32,10 @@ constexpr double SAMPLE_RATE = 40e6;
 constexpr double DECIMATED_RATE = 20e6;
 /* Experimental single-chain rate with the BW80 filter profile. */
 constexpr double WIDE_RATE = 80e6;
+/* Samples at or above this magnitude count as clipped (full scale is 8191). */
+constexpr int AGC_CLIP_LEVEL = 8180;
+/* Automatic gain mode runs the host loop rather than releasing to the chip. */
+constexpr bool DEFAULT_AUTO_HOST = true;
 constexpr double FULL_SCALE = 8192.0;
 constexpr size_t DEFAULT_BUFFER_SAMPLES = 65536;
 constexpr size_t DEFAULT_BUFFERS = 64;
@@ -147,6 +152,10 @@ public:
         int manual = 0;
         if (birriasdr_get_gain_codes(dev_, &gain_, &manual) == 0)
             manual_ = manual != 0;
+        if (!manual_ && autoHostAvailable()) {
+            std::lock_guard<std::mutex> lock(gain_mutex_);
+            agcBegin();
+        }
     }
 
     ~BirriaSDRDevice() override
@@ -264,6 +273,11 @@ public:
             throw std::runtime_error("BirriaSDR: transfers must be 0 or 4 to 256");
 
         check(birriasdr_set_receive_chain(dev_, chain), "receive chain");
+        if (!manual_ && autoHostAvailable()) {
+            /* The steps depend on the chain. */
+            std::lock_guard<std::mutex> lock(gain_mutex_);
+            agcBegin();
+        }
         if (chain == BIRRIASDR_CHAIN_BOTH)
             SoapySDR::log(SOAPY_SDR_WARNING, "BirriaSDR: both chains carry a static DC offset per chain; "
                                              "subtract it before demodulating");
@@ -308,6 +322,7 @@ public:
             }
             reader_.join();
         }
+        stopAgcThread();
         try {
             applyStaged();
         } catch (const std::exception &error) {
@@ -345,6 +360,14 @@ public:
             reader_done_ = true;
             ring_ready_.notify_all();
         });
+        {
+            std::lock_guard<std::mutex> lock(gain_mutex_);
+            agc_.restart_windows(agcNow());
+        }
+        agc_values_ = agc_clipped_ = 0;
+        agc_peak_ = 0;
+        agc_stop_ = false;
+        agc_thread_ = std::thread([this] { agcLoop(); });
         return 0;
     }
 
@@ -468,10 +491,34 @@ public:
                            frequency / 1e6, list.c_str(), birriasdr_get_center_freq(dev_) / 1e6);
             return;
         }
-        if (report(retry_busy([&] { return birriasdr_set_center_freq(dev_, hz); }), "frequency")) {
-            /* Leaving chain 0's 5 GHz band lowers LPF codes above 8 (library). */
+        int result = retry_busy([&] { return birriasdr_set_center_freq(dev_, hz); });
+        if (result == BIRRIASDR_ERROR_INVALID && !manual_ && autoHostAvailable()) {
+            /* A live retune out of 5 GHz is refused while automatic gain holds
+             * an LPF code above the 2.4 GHz limit; lower it first. */
             std::lock_guard<std::mutex> lock(gain_mutex_);
-            refresh_gain_codes();
+            birriasdr_gain lowered{};
+            int manual = 0;
+            if (birriasdr_get_gain_codes(dev_, &lowered, &manual) == 0) {
+                lowered.lpf = std::min<uint8_t>(lowered.lpf, (uint8_t)gain_element("LPF").maximum);
+                if (retry_busy([&] { return birriasdr_set_gain_codes(dev_, &lowered); }) == 0)
+                    result = retry_busy([&] { return birriasdr_set_center_freq(dev_, hz); });
+            }
+        }
+        if (report(result, "frequency")) {
+            std::lock_guard<std::mutex> lock(gain_mutex_);
+            if (!manual_ && autoHostAvailable()) {
+                /* The slider values stay; only their limits follow the band. */
+                birriasdr_gain maximum{};
+                if (birriasdr_get_gain_code_limits(dev_, &maximum) == 0)
+                    gain_.lpf = std::min(gain_.lpf, maximum.lpf);
+                if (agcSteps() != agc_.steps())
+                    agcBegin();
+                else
+                    agc_.restart_windows(agcNow());
+            } else {
+                /* Leaving chain 0's 5 GHz band lowers LPF codes above 8 (library). */
+                refresh_gain_codes();
+            }
         }
     }
 
@@ -562,9 +609,10 @@ public:
 
     /* Gain elements are raw hardware indices, not dB. The overall gain is the
      * library's measured relative dB table (birriasdr_set_tuner_gain()), which
-     * picks the nearest step's codes. Automatic mode releases the manual
-     * overrides; codes or an overall gain set meanwhile are kept for the next
-     * manual mode.
+     * picks the nearest step's codes. Automatic mode runs the host gain loop
+     * (HostAgc.hpp) or, with the auto_gain setting at "released", releases the
+     * manual overrides. Codes or an overall gain set meanwhile are kept for the
+     * next manual mode. While the host loop runs, reads report what it holds.
      */
     std::vector<std::string> listGains(const int, const size_t) const override
     {
@@ -579,10 +627,14 @@ public:
     void setGainMode(const int, const size_t, const bool automatic) override
     {
         std::lock_guard<std::mutex> lock(gain_mutex_);
-        if (!report(retry_busy([&] { return birriasdr_set_tuner_gain_mode(dev_, automatic ? 0 : 1); }),
+        const bool host = automatic && autoHostAvailable();
+        if (!report(retry_busy([&] { return birriasdr_set_tuner_gain_mode(dev_, automatic && !host ? 0 : 1); }),
                     "gain mode"))
             return;
         manual_ = !automatic;
+        agc_active_ = false;
+        if (host)
+            agcBegin();
         if (!manual_)
             return;
         if (pending_tenths_db_) {
@@ -640,7 +692,7 @@ public:
         if (!(caps_ & BIRRIASDR_CAP_GAIN_DB))
             return SoapySDR::Device::getGain(direction, channel);
         std::lock_guard<std::mutex> lock(gain_mutex_);
-        if (!manual_ && pending_tenths_db_)
+        if (!manual_ && !agc_active_ && pending_tenths_db_)
             return *pending_tenths_db_ / 10.0;
         int tenths = 0;
         return birriasdr_get_tuner_gain(dev_, &tenths) == 0 ? tenths / 10.0 : 0.0;
@@ -680,7 +732,7 @@ public:
         std::lock_guard<std::mutex> lock(gain_mutex_);
         birriasdr_gain gain = gain_;
         int manual = 0;
-        if (manual_)
+        if (manual_ || agc_active_)
             report(birriasdr_get_gain_codes(dev_, &gain, &manual), "get gain codes");
         return gain.*gain_element(name).code;
     }
@@ -717,6 +769,17 @@ public:
                                "clean overruns are free. 0 ends the stream at the first gap";
         restarts.type = SoapySDR::ArgInfo::INT;
         settings.push_back(restarts);
+        if (caps_ & BIRRIASDR_CAP_GAIN_DB) {
+            SoapySDR::ArgInfo automatic;
+            automatic.key = "auto_gain";
+            automatic.value = auto_host_ ? "host" : "released";
+            automatic.name = "Automatic gain";
+            automatic.description = "What automatic gain mode does: \"host\" is a slow loop that holds the highest "
+                                    "analog gain without clipping; \"released\" leaves gain to the chip";
+            automatic.type = SoapySDR::ArgInfo::STRING;
+            automatic.options = {"host", "released"};
+            settings.push_back(automatic);
+        }
         return settings;
     }
 
@@ -740,6 +803,12 @@ public:
                 SoapySDR::log(SOAPY_SDR_WARNING, "BirriaSDR: channel filter applies at the next stream start");
         } else if (key == "max_restarts") {
             max_restarts_ = (unsigned)std::stoul(value);
+        } else if (key == "auto_gain") {
+            if (value != "host" && value != "released")
+                throw std::runtime_error("BirriaSDR: auto_gain must be host or released");
+            auto_host_ = value == "host";
+            if (!manual_)
+                setGainMode(SOAPY_SDR_RX, 0, true);
         } else {
             throw std::runtime_error("BirriaSDR: unknown setting " + key);
         }
@@ -757,6 +826,8 @@ public:
         }
         if (key == "max_restarts")
             return std::to_string(max_restarts_);
+        if (key == "auto_gain")
+            return auto_host_ ? "host" : "released";
         throw std::runtime_error("BirriaSDR: unknown setting " + key);
     }
 
@@ -771,6 +842,80 @@ private:
         if (count > 0 && birriasdr_get_tuner_gains(dev_, gains.data(), gains.size()) != count)
             gains.clear();
         return gains;
+    }
+
+    bool autoHostAvailable() const { return auto_host_ && (caps_ & BIRRIASDR_CAP_GAIN_DB); }
+
+    static double agcNow()
+    {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    /* The analog overall-gain steps: digital adds no SNR and can only clip. */
+    std::vector<int> agcSteps() const
+    {
+        std::vector<int> steps = tuner_gains();
+        birriasdr_gain maximum{};
+        if (chain_slots_.size() == 1 && birriasdr_get_gain_code_limits(dev_, &maximum) == 0 &&
+            steps.size() > maximum.digital)
+            steps.resize(steps.size() - maximum.digital);
+        return steps;
+    }
+
+    /* Enter the host loop at the top of the staged band and chain; gain_mutex_ held. */
+    void agcBegin()
+    {
+        std::vector<int> steps = agcSteps();
+        agc_active_ = false;
+        if (steps.empty())
+            return;
+        const int top = steps.back();
+        report(retry_busy([&] { return birriasdr_set_tuner_gain_mode(dev_, 1); }), "gain mode");
+        report(retry_busy([&] { return birriasdr_set_tuner_gain(dev_, top); }), "automatic gain");
+        agc_.start(std::move(steps), (size_t)-1, agcNow());
+        int committed = 0;
+        if (birriasdr_get_tuner_gain(dev_, &committed) == 0)
+            agc_.sync(committed, agcNow());
+        agc_active_ = true;
+    }
+
+    /* Runs alongside the read thread, so a gain transaction never stalls USB. */
+    void agcLoop()
+    {
+        std::unique_lock<std::mutex> stop(agc_stop_mutex_);
+        while (!agc_stop_cv_.wait_for(stop, std::chrono::milliseconds(250), [this] { return agc_stop_; })) {
+            birria_soapy::AgcStats stats;
+            stats.values = agc_values_.exchange(0);
+            stats.clipped = agc_clipped_.exchange(0);
+            stats.peak = agc_peak_.exchange(0);
+            std::lock_guard<std::mutex> lock(gain_mutex_);
+            if (!agc_active_)
+                continue;
+            const int previous = agc_.tenths();
+            if (!agc_.update(stats, agcNow()))
+                continue;
+            if (report(retry_busy([&] { return birriasdr_set_tuner_gain(dev_, agc_.tenths()); }), "automatic gain")) {
+                SoapySDR::logf(SOAPY_SDR_INFO, "BirriaSDR: automatic gain %.1f -> %.1f dB (%llu clipped of %llu values, peak %d)",
+                               previous / 10.0, agc_.tenths() / 10.0, (unsigned long long)stats.clipped,
+                               (unsigned long long)stats.values, stats.peak);
+            } else {
+                int committed = previous;
+                birriasdr_get_tuner_gain(dev_, &committed);
+                agc_.sync(committed, agcNow());
+            }
+        }
+    }
+
+    void stopAgcThread()
+    {
+        if (!agc_thread_.joinable())
+            return;
+        {
+            std::lock_guard<std::mutex> stop(agc_stop_mutex_);
+            agc_stop_ = true;
+        }
+        agc_stop_cv_.notify_all();
+        agc_thread_.join();
     }
 
     /* Mirror the codes the library committed for an overall gain; gain_mutex_ held. */
@@ -796,6 +941,15 @@ private:
         auto *self = static_cast<BirriaSDRDevice *>(context);
         const double width = (double)self->chain_slots_.size();
         long long time_ns = self->sampleTime(first / width, count / width);
+        if (self->agc_active_) {
+            birria_soapy::AgcStats stats;
+            birria_soapy::agc_scan(iq, (size_t)count * 2, AGC_CLIP_LEVEL, stats);
+            self->agc_values_ += stats.values;
+            self->agc_clipped_ += stats.clipped;
+            int peak = self->agc_peak_.load();
+            while (stats.peak > peak && !self->agc_peak_.compare_exchange_weak(peak, stats.peak)) {
+            }
+        }
         size_t tail;
         {
             std::lock_guard<std::mutex> lock(self->ring_mutex_);
@@ -895,6 +1049,7 @@ private:
     void stopReader()
     {
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
+        stopAgcThread();
         if (!reader_.joinable())
             return;
         for (;;) {
@@ -919,6 +1074,18 @@ private:
     /* An overall gain set in automatic mode, applied on the next manual mode. */
     std::optional<int> pending_tenths_db_;
     std::atomic<bool> manual_{false};
+
+    /* Automatic mode. agc_ is guarded by gain_mutex_. */
+    std::atomic<bool> auto_host_{DEFAULT_AUTO_HOST};
+    std::atomic<bool> agc_active_{false};
+    birria_soapy::HostAgc agc_;
+    std::thread agc_thread_;
+    std::mutex agc_stop_mutex_;
+    std::condition_variable agc_stop_cv_;
+    bool agc_stop_ = false;
+    std::atomic<uint64_t> agc_values_{0}, agc_clipped_{0};
+    std::atomic<int> agc_peak_{0};
+
     uint32_t staged_bandwidth_ = 0;
     int staged_pd_ = -1;
     int staged_filter_ = -1;
