@@ -221,10 +221,11 @@ static void test_gain_db(void)
         int count;
         atomic_store(&dev.receive_chain, (unsigned)chain);
         count = birriasdr_get_tuner_gains(&dev, gains, 32);
-        CHECK(count == (chain == BIRRIASDR_CHAIN_BOTH ? 14 : 26) && gains[0] == 0);
+        /* Chain 1 at 2.4 GHz: LPF 1..6 add under 0.5 dB, so only 7 and 8 are steps. */
+        CHECK(count == (chain == BIRRIASDR_CHAIN_BOTH ? 14 : chain == BIRRIASDR_CHAIN_1 ? 20 : 26) && gains[0] == 0);
         for (int i = 1; i < count; ++i)
             CHECK(gains[i] > gains[i - 1]);
-        CHECK(gains[count - 1] == (chain == BIRRIASDR_CHAIN_0 ? 594 : chain == BIRRIASDR_CHAIN_1 ? 560 : 474));
+        CHECK(gains[count - 1] == (chain == BIRRIASDR_CHAIN_0 ? 594 : chain == BIRRIASDR_CHAIN_1 ? 485 : 474));
     }
     atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_0);
     CHECK(birriasdr_set_tuner_gain(NULL, 0) == BIRRIASDR_ERROR_INVALID);
@@ -247,7 +248,7 @@ static void test_gain_db(void)
     CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
     CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 138 + 156 + 60);
     atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_1);
-    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 144 + 110 + 60);
+    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 139 + 44 + 60);
     atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_BOTH);
     CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 138 + 156);
     CHECK(birriasdr_set_tuner_gain(&dev, 10000) == 0);

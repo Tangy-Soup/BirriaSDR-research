@@ -298,15 +298,18 @@ static void test_gain_steps(void)
     struct birriasdr_gain gain = {0, 0, 0}, maximum;
     int tenths;
     for (unsigned chain = BIRRIASDR_CHAIN_0; chain <= BIRRIASDR_CHAIN_BOTH; ++chain) {
+        /* Chain 1's LPF 1..6 add under 0.5 dB at 2.4 GHz, so its LPF steps are 7 and 8. */
+        int top_lpf = chain == BIRRIASDR_CHAIN_1 ? 7 : 13;
         int count = mt_gain_steps(chain, g24, steps, 32);
-        CHECK(count == (chain == BIRRIASDR_CHAIN_BOTH ? 14 : 26));
+        CHECK(count == (chain == BIRRIASDR_CHAIN_BOTH ? 14 : chain == BIRRIASDR_CHAIN_1 ? 20 : 26));
         CHECK(steps[0].tenths_db == 0 && !steps[0].gain.lna && !steps[0].gain.lpf);
         for (int i = 1; i < count; ++i) {
             CHECK(steps[i].tenths_db > steps[i - 1].tenths_db);
             CHECK(mt_gain_tenths_db(chain, g24, &steps[i].gain, &tenths) == 0 && tenths == steps[i].tenths_db);
         }
-        CHECK(steps[5].gain.lna == 5 && !steps[5].gain.lpf && steps[13].gain.lpf == 8);
-        CHECK(chain == BIRRIASDR_CHAIN_BOTH || steps[25].gain.digital == 12);
+        CHECK(steps[5].gain.lna == 5 && !steps[5].gain.lpf && steps[top_lpf].gain.lpf == 8);
+        CHECK(chain != BIRRIASDR_CHAIN_1 || steps[6].gain.lpf == 7);
+        CHECK(chain == BIRRIASDR_CHAIN_BOTH || steps[count - 1].gain.digital == 12);
     }
     CHECK(mt_gain_steps(BIRRIASDR_CHAIN_0, g24, NULL, 0) == 26);
     CHECK(mt_gain_steps(3, g24, steps, 32) == BIRRIASDR_ERROR_INVALID);

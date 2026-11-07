@@ -68,11 +68,12 @@
  * an absolute RF gain. Each stage was measured on one chain at a time at
  * 2437 MHz and 40 MSps, as the level change of one AP's beacons against
  * reference dwells in one live-sweep stream. The stages add within 0.3 dB rms
- * (chain 0) and 0.44 dB rms (chain 1). Digital gain measured 1.0 dB per even
+ * (chain 0) and 0.36 dB rms (chain 1). Digital gain measured 1.0 dB per even
  * code; odd codes assume the same step. The both-chain taps come before the
  * digital stage, so there digital adds nothing and chain 0's analog values
- * apply. Chain 1's stages were measured before its receive word gained bit 17
- * (mt7921_chain.c); the table is relative, but those steps were not remeasured.
+ * apply. Chain 1 was remeasured with bit 17 in its receive word
+ * (mt7921_chain.c): its LPF 0..6 are flat and only 7 and 8 add gain, as at
+ * 5 GHz, so its LPF steps are ordered and skipped like the 5 GHz ones.
  * The overall-gain steps raise LNA first, then LPF, then digital,
  * because SNR followed LNA, saturated in LPF and never changed with digital.
  * 5 GHz has its own table per chain (lna_tenths_5g, lpf_tenths_5g): there
@@ -88,15 +89,20 @@
 static const uint32_t gain_addresses[] = {0x830000c4, 0x83000108, 0x83000150, 0x768};
 static const uint32_t gain_masks[] = {0xf7f7f707, 0x3f3f0000, 0x8070f000, 0xff800000};
 
-/* Measured stage gains in tenths of a dB above code 0, per receive chain. */
+/* Measured stage gains in tenths of a dB above code 0, per receive chain.
+ * Chain 0: 2026-10-23/24. Chain 1, 2026-11-04 with bit 17: seven sweeps
+ * against LNA 3 / LPF 4 and LNA 5 / LPF 4 references, 0.36 dB rms. Its LNA 0
+ * was too weak to measure and keeps the earlier 7.7 dB step to LNA 1. Its
+ * LPF 0..6 measured within 0.7 dB of each other; values below code 0's are
+ * clamped to 0.
+ */
 static const int16_t lna_tenths[2][MT_GAIN_LNA_MAX + 1] = {
     {0, 81, 138, 197, 258, 318},
-    {0, 77, 144, 200, 268, 330},
+    {0, 77, 139, 223, 259, 321},
 };
-/* Chain 1's LPF codes 1, 3 and 5 are interpolated between measured codes. */
 static const int16_t lpf_tenths[2][MT_GAIN_LPF_MAX + 1] = {
     {0, 21, 40, 59, 80, 97, 117, 139, 156},
-    {0, 17, 33, 49, 64, 76, 89, 96, 110},
+    {0, 0, 0, 3, 3, 3, 3, 24, 44},
 };
 /* 5 GHz, from live sweeps (beacon level against reference dwells, as at
  * 2437 MHz), per receive chain.
