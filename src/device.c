@@ -563,6 +563,7 @@ int birriasdr_reset_buffer(birriasdr_dev_t *dev)
 {
     BS_TRY(require_idle(dev));
     memset(&dev->stats, 0, sizeof(dev->stats));
+    memset(&dev->usb_stats, 0, sizeof(dev->usb_stats));
     return 0;
 }
 
@@ -604,6 +605,15 @@ int birriasdr_get_stream_stats(birriasdr_dev_t *dev, struct birriasdr_stream_sta
     if (!stats)
         return BIRRIASDR_ERROR_INVALID;
     *stats = dev->stats;
+    return 0;
+}
+
+int birriasdr_get_usb_stats(birriasdr_dev_t *dev, struct birriasdr_usb_stats *stats)
+{
+    BS_TRY(require_idle(dev));
+    if (!stats)
+        return BIRRIASDR_ERROR_INVALID;
+    *stats = dev->usb_stats;
     return 0;
 }
 

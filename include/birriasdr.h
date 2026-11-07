@@ -119,6 +119,18 @@ struct birriasdr_stream_stats {
     int reset_error;
 };
 
+/** Host-side USB receive queue over one whole read, including any restarts.
+ * These are for diagnosing lost samples, not part of the sample contract: how
+ * close the host queue came to overflowing, and how long USB went quiet.
+ */
+struct birriasdr_usb_stats {
+    uint64_t completions;    /**< USB transfers completed with data. */
+    uint32_t queue_capacity; /**< Transfers the queue holds behind the reader. */
+    uint32_t queue_peak;     /**< Most completed transfers waiting at one time. */
+    uint32_t parked_peak;    /**< Most parked with the queue full (recovering reads only). */
+    uint32_t longest_gap_us; /**< Longest interval between two completions. */
+};
+
 /** Samples are interleaved native-endian int16_t I,Q in [-8192,8191].
  * count and first_sample count COMPLEX samples, not scalar components/bytes.
  * The buffer is borrowed until callback return; copy it to retain it. There
@@ -459,6 +471,11 @@ int birriasdr_cancel_async(birriasdr_dev_t *dev);
 /** Copy final statistics while idle; returns BUSY until the read has returned. */
 int birriasdr_get_stream_stats(birriasdr_dev_t *dev,
                              struct birriasdr_stream_stats *stats);
+
+/** Copy the last read's USB queue statistics while idle; returns BUSY until the
+ * read has returned. All zero before the first read.
+ */
+int birriasdr_get_usb_stats(birriasdr_dev_t *dev, struct birriasdr_usb_stats *stats);
 
 /* All functions return 0 on success unless their comments say otherwise.
  * The center-frequency setter/getter, tuning-range getter, raw-gain mode/code

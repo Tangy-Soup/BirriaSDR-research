@@ -180,6 +180,9 @@ static void test_backpressure(void)
     }
     CHECK(bs_reader_take(reader, bytes, &length, 5) == BIRRIASDR_ERROR_TIMEOUT);
     bs_reader_destroy(reader);
+    /* 36 transfers filled the 32-slot queue and parked the other four. */
+    CHECK(dev.usb_stats.completions == 160 && dev.usb_stats.queue_capacity == 32);
+    CHECK(dev.usb_stats.queue_peak == 32 && dev.usb_stats.parked_peak == 4);
     for (unsigned count = 34; count <= 36; ++count) {
         reset_mock(count, 0);
         CHECK(bs_reader_create(&dev, 4, &reader) == 0);

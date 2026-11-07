@@ -419,6 +419,7 @@ int bs_stream(birriasdr_dev_t *dev, birriasdr_read_async_cb_t callback,
     dev->stream_continuous = packets == 0;
     pthread_mutex_unlock(&dev->control_mutex);
     memset(&dev->stats, 0, sizeof(dev->stats));
+    memset(&dev->usb_stats, 0, sizeof(dev->usb_stats));
     delivery = (struct delivery){.dev = dev, .callback = callback, .context = context,
                                 .capacity = buffer_samples};
     delivery.iq = calloc((size_t)buffer_samples * 2, sizeof(*delivery.iq));

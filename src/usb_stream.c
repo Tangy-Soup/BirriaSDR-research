@@ -26,7 +26,25 @@ struct bs_reader {
     struct transfer_slot *held_head, *held_tail;
     uint8_t *queue;
     unsigned *lengths;
+    /* Diagnostics, under the mutex; merged into the device when destroyed. */
+    unsigned parked;
+    struct birriasdr_usb_stats stats;
+    struct timespec last_completion;
 };
+
+/* Peak and gap bookkeeping for one completion that carried data. */
+static void note_completion(struct bs_reader *reader)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (reader->stats.completions++) {
+        int64_t us = (int64_t)(now.tv_sec - reader->last_completion.tv_sec) * 1000000 +
+                     (now.tv_nsec - reader->last_completion.tv_nsec) / 1000;
+        if (us > reader->stats.longest_gap_us)
+            reader->stats.longest_gap_us = us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
+    }
+    reader->last_completion = now;
+}
 
 /* Cancel once with the queue lock held. Transfer memory remains alive until
  * cancellation callbacks have retired every submitted request.
@@ -51,6 +69,8 @@ static void queue_transfer(struct bs_reader *reader, struct libusb_transfer *tra
     reader->lengths[reader->tail] = (unsigned)length;
     reader->tail = (reader->tail + 1) % reader->capacity;
     ++reader->count;
+    if (reader->count > reader->stats.queue_peak)
+        reader->stats.queue_peak = reader->count;
 }
 
 /* Submission memory failures come from the OS's limit on queued USB transfer
@@ -99,6 +119,7 @@ static void LIBUSB_CALL receive_transfer(struct libusb_transfer *transfer)
             reader->error = transfer->status == LIBUSB_TRANSFER_NO_DEVICE ?
                 BIRRIASDR_ERROR_NO_DEVICE : BIRRIASDR_ERROR_IO;
         } else if (transfer->actual_length > 0) {
+            note_completion(reader);
             if (reader->held_head || reader->count == reader->capacity) {
                 if (reader->backpressure) {
                     slot->next = NULL;
@@ -108,6 +129,8 @@ static void LIBUSB_CALL receive_transfer(struct libusb_transfer *transfer)
                         reader->held_head = slot;
                     reader->held_tail = slot;
                     held = true;
+                    if (++reader->parked > reader->stats.parked_peak)
+                        reader->stats.parked_peak = reader->parked;
                 } else {
                     reader->error = BIRRIASDR_ERROR_OVERRUN;
                 }
@@ -135,6 +158,7 @@ static void resume_transfers(struct bs_reader *reader)
         if (!reader->held_head)
             reader->held_tail = NULL;
         slot->next = NULL;
+        --reader->parked;
         queue_transfer(reader, slot->transfer);
         submit_slot(slot);
     }
@@ -292,6 +316,16 @@ void bs_reader_destroy(struct bs_reader *reader)
         cancel_transfers(reader);
         pthread_mutex_unlock(&reader->mutex);
         pthread_join(reader->thread, NULL);
+        /* A read can restart with a new reader; report the whole read. */
+        struct birriasdr_usb_stats *total = &reader->dev->usb_stats;
+        total->completions += reader->stats.completions;
+        total->queue_capacity = reader->capacity;
+        if (reader->stats.queue_peak > total->queue_peak)
+            total->queue_peak = reader->stats.queue_peak;
+        if (reader->stats.parked_peak > total->parked_peak)
+            total->parked_peak = reader->stats.parked_peak;
+        if (reader->stats.longest_gap_us > total->longest_gap_us)
+            total->longest_gap_us = reader->stats.longest_gap_us;
     }
     if (reader->slots) {
         for (unsigned i = 0; i < reader->depth; ++i) {

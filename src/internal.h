@@ -134,6 +134,7 @@ struct birriasdr_dev {
         uint32_t rf_command_high[2];
     } mt7921;
     struct birriasdr_stream_stats stats;
+    struct birriasdr_usb_stats usb_stats;
 };
 
 /* 2:1 halfband state: history followed by one packet of input (src/decimate.c). */
