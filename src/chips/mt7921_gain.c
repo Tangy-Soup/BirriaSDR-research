@@ -67,13 +67,12 @@
  * The dB table is relative: tenths of a dB above the lowest code (0/0/0), not
  * an absolute RF gain. Each stage was measured on one chain at a time at
  * 2437 MHz and 40 MSps, as the level change of one AP's beacons against
- * reference dwells in one live-sweep stream. The stages add within 0.3 dB rms
+ * reference dwells in one live-sweep stream. The stages add within 0.2 dB rms
  * (chain 0) and 0.36 dB rms (chain 1). Digital gain measured 1.0 dB per even
  * code; odd codes assume the same step. The both-chain taps come before the
  * digital stage, so there digital adds nothing and chain 0's analog values
- * apply. Chain 1 was remeasured with bit 17 in its receive word
- * (mt7921_chain.c): its LPF 0..6 are flat and only 7 and 8 add gain, as at
- * 5 GHz, so its LPF steps are ordered and skipped like the 5 GHz ones.
+ * apply. On both chains LPF 0..6 are flat and only 7 and 8 add gain, as at
+ * 5 GHz, so the LPF steps are ordered and skipped like the 5 GHz ones.
  * The overall-gain steps raise LNA first, then LPF, then digital,
  * because SNR followed LNA, saturated in LPF and never changed with digital.
  * 5 GHz has its own table per chain (lna_tenths_5g, lpf_tenths_5g): there
@@ -90,18 +89,20 @@ static const uint32_t gain_addresses[] = {0x830000c4, 0x83000108, 0x83000150, 0x
 static const uint32_t gain_masks[] = {0xf7f7f707, 0x3f3f0000, 0x8070f000, 0xff800000};
 
 /* Measured stage gains in tenths of a dB above code 0, per receive chain.
- * Chain 0: 2026-10-23/24. Chain 1, 2026-11-04 with bit 17: seven sweeps
- * against LNA 3 / LPF 4 and LNA 5 / LPF 4 references, 0.36 dB rms. Its LNA 0
- * was too weak to measure and keeps the earlier 7.7 dB step to LNA 1. Its
- * LPF 0..6 measured within 0.7 dB of each other; values below code 0's are
- * clamped to 0.
+ * Chain 0, 2026-11-05: seven sweeps against LNA 3 / LPF 4 and LNA 5 / LPF 4
+ * references, 0.20 dB rms; LPF 0..6 within 0.3 dB of each other, written as 0.
+ * Chain 1, 2026-11-04 with bit 17 in its receive word (mt7921_chain.c): the
+ * same schedules, 0.36 dB rms. Its LNA 0 was too weak to measure and keeps the
+ * earlier 7.7 dB step to LNA 1. Its LPF 0..6 measured within 0.7 dB of each
+ * other; values below code 0's are clamped to 0.
+ * The 2026-10-23/24 chain-0 table had a 15.6 dB LPF span; see docs/mt7921.md.
  */
 static const int16_t lna_tenths[2][MT_GAIN_LNA_MAX + 1] = {
-    {0, 81, 138, 197, 258, 318},
+    {0, 60, 121, 204, 239, 298},
     {0, 77, 139, 223, 259, 321},
 };
 static const int16_t lpf_tenths[2][MT_GAIN_LPF_MAX + 1] = {
-    {0, 21, 40, 59, 80, 97, 117, 139, 156},
+    {0, 0, 0, 0, 0, 0, 0, 20, 40},
     {0, 0, 0, 3, 3, 3, 3, 24, 44},
 };
 /* 5 GHz, from live sweeps (beacon level against reference dwells, as at

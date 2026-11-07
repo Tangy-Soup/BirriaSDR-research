@@ -115,7 +115,7 @@ For more detail, see:
 | Sample resolution | Signed 14-bit I and Q, from −8192 to 8191 |
 | Receive channels | Chain 0 by default. Opt-in research setting (`--chain 1` or `--chain both`) for the second receiver alone or both chains interleaved. See [receive-chain selection](docs/mt7921.md#receive-chain-selection) |
 | Transmit | None, receive only |
-| Gain | Raw codes for LNA 0 to 5, filter stage 0 to 8 (0 to 15 at 5 GHz) and digital 0 to 12 on each streamed chain, or an overall gain from a measured table of relative dB (0 to 59.4 dB on chain 0 at 2437 MHz, and at 5 GHz 0 to 59.2 dB on chain 0, 0 to 55.1 dB on chain 1 and 0 to 47.2 dB on both chains). The tables were measured on the EDUP board and have no absolute dBm reference. At 5 GHz, weak signals need LNA 5 and a filter-stage code of 11 to 14, but strong APs clip at the top codes. See [gain in dB](docs/mt7921.md#gain-in-db) and [5 GHz filter-stage codes](docs/mt7921.md#5-ghz-filter-stage-codes) |
+| Gain | Raw codes for LNA 0 to 5, filter stage 0 to 8 (0 to 15 at 5 GHz) and digital 0 to 12 on each streamed chain, or an overall gain from a measured table of relative dB (0 to 45.8 dB on chain 0 at 2437 MHz, and at 5 GHz 0 to 59.2 dB on chain 0, 0 to 55.1 dB on chain 1 and 0 to 47.2 dB on both chains). The tables were measured on the EDUP board and have no absolute dBm reference. At 5 GHz, weak signals need LNA 5 and a filter-stage code of 11 to 14, but strong APs clip at the top codes. See [gain in dB](docs/mt7921.md#gain-in-db) and [5 GHz filter-stage codes](docs/mt7921.md#5-ghz-filter-stage-codes) |
 | Live gain changes | Supported without restarting capture, with a brief settling transient |
 | Automatic gain | Manual overrides can be released. Full AGC control is not implemented |
 | Capture blanking | The PHY packet detector blanks short zero runs into the capture. Opt-in packet-detect suppression (`--pd-n8`) removes them after about 250 ms of settling. Research setting, see [packet-detect suppression](docs/mt7921.md#packet-detect-suppression) |
@@ -572,7 +572,7 @@ directory.
 | Bandwidth | 20 or 40 MHz, rounded to the nearer one. A change during a stream applies at the next stream start |
 | Gain mode | Automatic releases the manual overrides; manual applies the cached codes |
 | Gain elements | `LNA` 0 to 5, `LPF` 0 to 8 (0 to 15 at 5 GHz, following the tuned band) and `DIG` 0 to 12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode |
-| Overall gain | The library's measured relative dB table, from 0 to 59.4 dB on chain 0 (0 to 59.2 dB at 5 GHz). A value picks the nearest step's codes, and a value set in automatic mode applies at the next manual mode |
+| Overall gain | The library's measured relative dB table, from 0 to 45.8 dB on chain 0 (0 to 59.2 dB at 5 GHz). A value picks the nearest step's codes, and a value set in automatic mode applies at the next manual mode |
 | Antenna | `RX` only |
 | Settings | `packet_detect_suppression` (applies at the next stream start; discard about the first 250 ms), `channel_filter` (capture after the digital channel filter; applies at the next stream start) and `max_restarts` (recovery budget, default 16) |
 | Timestamps | `readStream` sets `SOAPY_SDR_HAS_TIME`. `timeNs` counts samples since activation at the nominal rate; across a gap it adds the lost interval measured on the host clock (about 1 ms uncertainty). It labels samples; it is not a hardware clock |

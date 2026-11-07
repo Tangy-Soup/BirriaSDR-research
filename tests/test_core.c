@@ -295,17 +295,17 @@ static void test_gain_db(void)
     CHECK(birriasdr_get_capabilities(&dev) & BIRRIASDR_CAP_GAIN_DB);
     CHECK(birriasdr_get_tuner_gains(NULL, NULL, 0) == BIRRIASDR_ERROR_INVALID);
     CHECK(birriasdr_get_tuner_gains(&dev, NULL, 4) == BIRRIASDR_ERROR_INVALID);
-    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 0) == 26);
-    CHECK(birriasdr_get_tuner_gains(&dev, gains, 3) == 26 && gains[0] == 0 && gains[2] == 138);
+    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 0) == 20);
+    CHECK(birriasdr_get_tuner_gains(&dev, gains, 3) == 20 && gains[0] == 0 && gains[2] == 121);
     for (int chain = BIRRIASDR_CHAIN_0; chain <= BIRRIASDR_CHAIN_BOTH; ++chain) {
         int count;
         atomic_store(&dev.receive_chain, (unsigned)chain);
         count = birriasdr_get_tuner_gains(&dev, gains, 32);
-        /* Chain 1 at 2.4 GHz: LPF 1..6 add under 0.5 dB, so only 7 and 8 are steps. */
-        CHECK(count == (chain == BIRRIASDR_CHAIN_BOTH ? 14 : chain == BIRRIASDR_CHAIN_1 ? 20 : 26) && gains[0] == 0);
+        /* At 2.4 GHz LPF 1..6 add under 0.5 dB, so only 7 and 8 are steps. */
+        CHECK(count == (chain == BIRRIASDR_CHAIN_BOTH ? 8 : 20) && gains[0] == 0);
         for (int i = 1; i < count; ++i)
             CHECK(gains[i] > gains[i - 1]);
-        CHECK(gains[count - 1] == (chain == BIRRIASDR_CHAIN_0 ? 594 : chain == BIRRIASDR_CHAIN_1 ? 485 : 474));
+        CHECK(gains[count - 1] == (chain == BIRRIASDR_CHAIN_0 ? 458 : chain == BIRRIASDR_CHAIN_1 ? 485 : 338));
     }
     atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_0);
     CHECK(birriasdr_set_tuner_gain(NULL, 0) == BIRRIASDR_ERROR_INVALID);
@@ -314,23 +314,23 @@ static void test_gain_db(void)
     CHECK(birriasdr_set_tuner_gain(&dev, 200) == 0);
     CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && manual);
     CHECK(gain.lna == 3 && gain.lpf == 0 && gain.digital == 0);
-    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 197);
-    CHECK(birriasdr_set_tuner_gain(&dev, 288) == 0);   /* tie between 258 and 318 */
-    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lna == 4);
+    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 204);
+    CHECK(birriasdr_set_tuner_gain(&dev, 30) == 0);   /* tie between 0 and 60 */
+    CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lna == 0);
     CHECK(birriasdr_set_tuner_gain(&dev, -1000) == 0);
     CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && !gain.lna && !gain.lpf && !gain.digital);
     CHECK(birriasdr_set_tuner_gain(&dev, 10000) == 0);
     CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0);
     CHECK(gain.lna == 5 && gain.lpf == 8 && gain.digital == 12);
-    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 594);
+    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 458);
     /* Arbitrary codes use the separable stage table; both-chain skips digital. */
     gain = (struct birriasdr_gain){2, 8, 6};
     CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
-    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 138 + 156 + 60);
+    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 121 + 40 + 60);
     atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_1);
     CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 139 + 44 + 60);
     atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_BOTH);
-    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 138 + 156);
+    CHECK(birriasdr_get_tuner_gain(&dev, &tenths) == 0 && tenths == 121 + 40);
     CHECK(birriasdr_set_tuner_gain(&dev, 10000) == 0);
     CHECK(birriasdr_get_gain_codes(&dev, &gain, &manual) == 0 && gain.lna == 5 && gain.lpf == 8 && !gain.digital);
     CHECK(birriasdr_get_tuner_gain(NULL, &tenths) == BIRRIASDR_ERROR_INVALID);
@@ -419,7 +419,7 @@ static void test_gain_5g_codes(void)
     CHECK(birriasdr_set_center_freq(&dev, UINT64_C(2437000000)) == 0);
     CHECK(birriasdr_get_gain_code_limits(&dev, &maximum) == 0 && maximum.lpf == 8);
     CHECK(birriasdr_set_gain_codes(&dev, &gain) == BIRRIASDR_ERROR_INVALID);
-    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 0) == 26);
+    CHECK(birriasdr_get_tuner_gains(&dev, NULL, 0) == 20);
     pthread_mutex_destroy(&dev.control_mutex);
 }
 
