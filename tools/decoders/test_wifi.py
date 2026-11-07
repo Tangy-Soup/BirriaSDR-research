@@ -642,6 +642,96 @@ class OutputTests(unittest.TestCase):
                 wifi.analyze(path, 5180, [36], phy='dsss')
 
 
+class EdgeRepairTests(unittest.TestCase):
+    """The offset after blanking runs in single-chain captures (cs16.edge_profile)."""
+    SHAPE = np.r_[0.5, 0, 0, 0, 0, 0.4, 0.3, np.ones(9), 0.55, 0.3, 0.2, 0.1]
+    OFFSET = -45 + 300j
+
+    def write(self, directory, runs=300, offset=None, name='edge.cs16', spacing=4000, seed=5):
+        """Noise with `runs` 49-zero runs, each followed by the transient."""
+        offset = self.OFFSET if offset is None else offset
+        rng = np.random.default_rng(seed)
+        n = spacing * (runs + 2)
+        x = (rng.normal(size=n) + 1j * rng.normal(size=n)) * 150
+        ends = spacing + spacing * np.arange(runs)
+        for e in ends:
+            x[e - 49:e] = 0
+            x[e + 1:e + 4] = 0
+            x[e:e + len(self.SHAPE)] += self.SHAPE * offset
+        raw = np.empty((n, 2), np.int16)
+        raw[:, 0] = np.rint(x.real)
+        raw[:, 1] = np.rint(x.imag)
+        path = Path(directory) / name
+        raw.astype('<i2').tofile(path)
+        return path, ends, n
+
+    def tearDown(self):
+        cs16.REPAIR_EDGES = True
+        cs16._edge_profiles.clear()
+
+    def test_offset_is_removed_and_zeros_stay(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, ends, n = self.write(d, runs=1500)
+            x = cs16.load(path) * 8192
+            cs16.REPAIR_EDGES = False
+            raw = cs16.load(path) * 8192
+        window = np.arange(len(self.SHAPE))
+        before = np.abs(raw[ends[:, None] + window].mean(axis=0))
+        after = np.abs(x[ends[:, None] + window].mean(axis=0))
+        self.assertGreater(before[9], 250)
+        self.assertLess(after.max(), 35)  # 5 sigma of the mean over 1500 runs
+        np.testing.assert_array_equal(x == 0, raw == 0)
+        # Samples outside the transients are untouched.
+        far = np.ones(n, bool)
+        far[(ends[:, None] + np.arange(cs16.EDGE_SPAN)).ravel()] = False
+        np.testing.assert_array_equal(x[far], raw[far])
+
+    def test_any_window_gets_the_same_correction(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, ends, n = self.write(d)
+            whole = cs16.load(path)
+            e = int(ends[20])
+            for start, count in ((e + 3, 500), (e + 8, 40), (e - 20, 100), (e - 49, 80), (0, e + 2), (n - 5000, -1)):
+                np.testing.assert_array_equal(cs16.load(path, start, count),
+                                              whole[start:None if count < 0 else start + count])
+
+    def test_too_few_runs_or_no_offset_change_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name, kwargs in (('few', dict(runs=cs16.EDGE_MIN_RUNS - 1)), ('none', dict(offset=0j))):
+                path, _, _ = self.write(d, name=name, **kwargs)
+                x = cs16.load(path)
+                cs16.REPAIR_EDGES = False
+                raw = cs16.load(path)
+                cs16.REPAIR_EDGES = True
+                np.testing.assert_array_equal(x, raw)
+
+    def test_noise_means_are_not_subtracted(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, _, _ = self.write(d)
+            profile = cs16.edge_profile(path) * 8192
+        # Only positions with a real offset: the shape, not its long noisy tail.
+        self.assertLessEqual(np.count_nonzero(profile[len(self.SHAPE) + 2:]), 2)
+
+    def test_both_chain_slots_are_not_repaired(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, _, n = self.write(d)
+            raw = np.fromfile(path, dtype='<i2').reshape(-1, 2)
+            double = Path(d) / 'both.cs16'
+            np.stack((raw, raw), axis=1).reshape(-1).astype('<i2').tofile(double)
+            x = cs16.load(double, slot=1, of=2)
+        expected = (raw[:, 0] + 1j * raw[:, 1]).astype(np.complex64) / 8192
+        np.testing.assert_array_equal(x, expected)
+
+    def test_command_line_can_turn_it_off(self):
+        cs16.REPAIR_EDGES = True
+        with tempfile.TemporaryDirectory() as d:
+            path, _, _ = self.write(d, runs=40)
+            with mock.patch('sys.argv', ['wifi.py', str(path), '--center', '2437', '--no-edge-repair', '--phy', 'ofdm']), \
+                    mock.patch('sys.stdout', io.StringIO()):
+                wifi.main()
+        self.assertFalse(cs16.REPAIR_EDGES)
+
+
 class DcBlockTests(unittest.TestCase):
     """BirriaSDR --chain both slots carry a static DC offset, about (-165, +152) LSB on slot 0."""
 

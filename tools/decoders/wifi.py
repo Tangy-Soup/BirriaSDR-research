@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import struct
 
+import cs16
 from cs16 import load
 import combine as combine_mod
 import combine_fd
@@ -340,10 +341,14 @@ def main():
                     help='The capture is a birria_rx --chain both recording: decode chain 0, chain 1 and their '
                          'noise-whitened combination (for 5 GHz OFDM also combined per subcarrier, branch fd), and count '
                          'each FCS-valid frame once (implies --dc-block 65536 unless given)')
+    ap.add_argument('--no-edge-repair', action='store_true',
+                    help='Keep the DC transient after blanking runs in single-chain captures, for comparisons')
     ap.add_argument('--json', type=Path)
     ap.add_argument('--pcap', type=Path, help='Valid frames for Wireshark; relative timestamps, FCS retained')
     ap.add_argument('--packets', action='store_true', help='Also print each verified frame')
     args = ap.parse_args()
+    if args.no_edge_repair:
+        cs16.REPAIR_EDGES = False
     if not 0 < args.stf_threshold < 1 or args.min_us <= 0:
         ap.error('Require 0 < --stf-threshold < 1 and --min-us > 0')
     if args.capture.stat().st_size % 4:
