@@ -51,6 +51,14 @@ int __real_birriasdr_cancel_async(birriasdr_dev_t *);
 int __wrap_birriasdr_cancel_async(birriasdr_dev_t *d) {
     int r=__real_birriasdr_cancel_async(d);event(r?"CANCEL_STATE":"CANCEL_OK");return r;
 }
+// The writer thread's disk: slow for "stall", failing after one write for "write-fail".
+size_t __real_fwrite(const void *,size_t,size_t,FILE *);
+size_t __wrap_fwrite(const void *p,size_t s,size_t n,FILE *f) {
+    static int writes;
+    if(kind("write-fail")&&writes++) {event("WRITE_FAIL");return 0;}
+    if(kind("stall")) pause_ms(20);
+    return __real_fwrite(p,s,n,f);
+}
 int bs_stream(birriasdr_dev_t *d,birriasdr_read_async_cb_t cb,void *ctx,uint32_t depth,uint32_t size,uint32_t packets) {
     (void)depth;(void)size;
     if(kind("before-read")) pause_ms(80); // watcher must retry STATE, not give up
@@ -58,6 +66,12 @@ int bs_stream(birriasdr_dev_t *d,birriasdr_read_async_cb_t cb,void *ctx,uint32_t
     static int16_t iq[4096]; for(unsigned i=0;i<4096;++i) iq[i]=(int16_t)(i%31-15);
     unsigned sent=0;
     while(atomic_load(&d->run_state)!=BS_CANCELLING) {
+        if(kind("stall")||kind("write-fail")) { // Ascending samples expose loss or reordering.
+            static int16_t seq[4096];
+            for(unsigned i=0;i<4096;++i) seq[i]=(int16_t)(sent*4096+i);
+            cb(seq,2048,(uint64_t)sent*2048,ctx);++sent;
+            continue;
+        }
         if(kind("callback")||kind("finite")||kind("recover")) {
             if(kind("recover")&&sent==1&&d->recovery_callback) {
                 struct birriasdr_recovery_event e={.next_sample=4096,.attempt=1,.error=BIRRIASDR_ERROR_IO};

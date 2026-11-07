@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,12 +18,37 @@
  * implementation that could take a lock from a signal handler. */
 static atomic_bool interrupted;
 _Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "the interrupt flag must be lock-free");
+
+/* Streamed recordings keep file I/O off the read thread. The read callback only
+ * copies into this preallocated ring; one writer thread converts and writes.
+ * When the ring is full the callback waits: the disk has fallen too far behind,
+ * and the library's own overrun handling then reports the loss (a stream error,
+ * or a logged gap with --recover), so the file never silently skips samples.
+ * Positions are complex samples since the start, protected by the lock; only
+ * the slots between tail and head belong to the writer.
+ */
+struct ring {
+    int16_t *iq;
+    uint64_t capacity, batch, head, tail, peak, waits;
+    bool finished, failed;
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+};
+
 struct recorder {
     birriasdr_dev_t *dev;
     FILE *file, *gaps;
-    uint64_t limit, count, skip, gap_count;
+    /* count: samples accepted for the file, its position for the gap log.
+     * written: samples actually in the file. */
+    uint64_t limit, count, written, skip, gap_count;
     int error;
+    struct ring ring;
 };
+
+/* Largest single write, in complex samples (4 MiB). */
+#define RING_WRITE_SAMPLES (1u << 20)
+/* Default ring: this many seconds of the stream, to ride out writeback stalls. */
+#define RING_DEFAULT_SECONDS 4u
 
 /* Full restarts allowed per read with --recover, as in the SoapySDR module;
  * clean overruns are recovered without spending this budget.
@@ -55,31 +81,94 @@ static void *watch_interrupt(void *context)
     return NULL;
 }
 
-/* Write conventional little-endian signed I,Q, preserving all 14 source bits.
- * A requested sample limit is a file limit; cancellation still drains hardware.
+/* Write conventional little-endian signed I,Q in place, preserving all 14 source
+ * bits. The caller's buffer is scratch: nothing reads these samples afterwards.
  */
-static void write_iq(const int16_t *iq, uint32_t count, struct recorder *recorder)
+static int store_iq(int16_t *iq, size_t count, struct recorder *recorder)
 {
-    uint8_t bytes[65536];
-    if (recorder->limit && count > recorder->limit - recorder->count)
-        count = (uint32_t)(recorder->limit - recorder->count);
-    for (uint32_t done = 0; done < count && !recorder->error;) {
-        uint32_t n = count - done;
-        if (n > sizeof(bytes) / 4)
-            n = sizeof(bytes) / 4;
-        for (uint32_t i = 0; i < n * 2; ++i) {
-            uint16_t value = (uint16_t)iq[(size_t)done * 2 + i];
-            bytes[2 * i] = (uint8_t)value;
-            bytes[2 * i + 1] = (uint8_t)(value >> 8);
-        }
-        if (fwrite(bytes, 4, n, recorder->file) != n)
-            recorder->error = 1;
-        else
-            recorder->count += n;
-        done += n;
+    uint8_t *bytes = (uint8_t *)iq;
+    size_t stored;
+    for (size_t i = 0; i < count * 2; ++i) {
+        uint16_t value = (uint16_t)iq[i];
+        bytes[2 * i] = (uint8_t)value;
+        bytes[2 * i + 1] = (uint8_t)(value >> 8);
     }
+    stored = fwrite(iq, 4, count, recorder->file);
+    recorder->written += stored;
+    return stored == count ? 0 : -1;
 }
 
+/* Drain the ring until the reader has finished and everything is written, or
+ * until a write fails. A failure releases a callback waiting for space. */
+static void *write_ring(void *context)
+{
+    struct recorder *recorder = context;
+    struct ring *ring = &recorder->ring;
+    pthread_mutex_lock(&ring->lock);
+    for (;;) {
+        uint64_t used = ring->head - ring->tail;
+        if (used < ring->batch && !ring->finished) {
+            pthread_cond_wait(&ring->changed, &ring->lock);
+            continue;
+        }
+        if (!used)
+            break;
+        uint64_t at = ring->tail % ring->capacity, n = used;
+        if (n > ring->capacity - at)
+            n = ring->capacity - at;
+        if (n > RING_WRITE_SAMPLES)
+            n = RING_WRITE_SAMPLES;
+        pthread_mutex_unlock(&ring->lock);
+        int failed = store_iq(ring->iq + at * 2, (size_t)n, recorder);
+        pthread_mutex_lock(&ring->lock);
+        if (failed) {
+            ring->failed = true;
+            pthread_cond_broadcast(&ring->changed);
+            break;
+        }
+        ring->tail += n;
+        pthread_cond_broadcast(&ring->changed);
+    }
+    pthread_mutex_unlock(&ring->lock);
+    return NULL;
+}
+
+/* Copy into the ring from the read callback, waiting for space if it is full.
+ * Returns -1 once the writer has failed. */
+static int ring_put(struct ring *ring, const int16_t *iq, uint64_t count)
+{
+    while (count) {
+        uint64_t space, at, n;
+        pthread_mutex_lock(&ring->lock);
+        if (ring->head - ring->tail == ring->capacity && !ring->failed)
+            ++ring->waits;
+        while (ring->head - ring->tail == ring->capacity && !ring->failed)
+            pthread_cond_wait(&ring->changed, &ring->lock);
+        if (ring->failed) {
+            pthread_mutex_unlock(&ring->lock);
+            return -1;
+        }
+        space = ring->capacity - (ring->head - ring->tail);
+        at = ring->head % ring->capacity;
+        pthread_mutex_unlock(&ring->lock);
+        n = count < space ? count : space;
+        if (n > ring->capacity - at)
+            n = ring->capacity - at;
+        memcpy(ring->iq + at * 2, iq, (size_t)n * 4);
+        iq += n * 2;
+        count -= n;
+        pthread_mutex_lock(&ring->lock);
+        ring->head += n;
+        if (ring->head - ring->tail > ring->peak)
+            ring->peak = ring->head - ring->tail;
+        if (ring->head - ring->tail >= ring->batch)
+            pthread_cond_broadcast(&ring->changed);
+        pthread_mutex_unlock(&ring->lock);
+    }
+    return 0;
+}
+
+/* A requested sample limit is a file limit; cancellation still drains hardware. */
 static void record(const int16_t *iq, uint32_t count, uint64_t first, void *context)
 {
     struct recorder *recorder = context;
@@ -90,7 +179,14 @@ static void record(const int16_t *iq, uint32_t count, uint64_t first, void *cont
         iq += (size_t)n * 2;
         count -= n;
     }
-    write_iq(iq, count, recorder);
+    if (recorder->limit && count > recorder->limit - recorder->count)
+        count = (uint32_t)(recorder->limit - recorder->count);
+    if (!recorder->error) {
+        if (ring_put(&recorder->ring, iq, count))
+            recorder->error = 1;
+        else
+            recorder->count += count;
+    }
     if (interrupted || recorder->error || (recorder->limit && recorder->count >= recorder->limit))
         birriasdr_cancel_async(recorder->dev);
 }
@@ -179,6 +275,7 @@ int main(int argc, char **argv)
 {
     birriasdr_dev_t *dev = NULL;
     struct birriasdr_stream_stats stats;
+    struct birriasdr_usb_stats usb_stats = {0};
     struct recorder recorder = {0};
     uint64_t frequency = 0;
     uint64_t bandwidth = 0, rate = 0;
@@ -190,9 +287,10 @@ int main(int argc, char **argv)
     uint64_t discard = 11719 * 2048;
     int result, close_result, argument = 1, explicit_gain = 0, buffered = 0;
     int pd_n8 = 0, explicit_discard = 0, chain = BIRRIASDR_CHAIN_0, channel_filter = 0;
-    int recover = 0, watching = 0;
+    int recover = 0, watching = 0, writing = 0;
+    uint64_t ring_mib = 0;
     struct interrupt_watch watch;
-    pthread_t watcher;
+    pthread_t watcher, writer;
     struct sigaction action = {0};
     char gaps_path[4096];
     action.sa_handler = on_signal;
@@ -211,6 +309,12 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[argument], "--recover")) {
             recover = 1;
             ++argument;
+        } else if (!strcmp(argv[argument], "--ring") && argument + 1 < argc) {
+            if (parse_number(argv[argument + 1], &ring_mib) || ring_mib > 1048576) {
+                fprintf(stderr, "--ring takes a size in MiB, 1 to 1048576\n");
+                return 1;
+            }
+            argument += 2;
         } else if (!strcmp(argv[argument], "--frequency") && argument + 1 < argc) {
             if (parse_number(argv[argument + 1], &frequency))
                 return 1;
@@ -259,7 +363,7 @@ int main(int argc, char **argv)
         }
     }
     if (argc - argument < 1 || argc - argument > 3) {
-        fprintf(stderr, "Usage: %s --list | [--buffered | --recover] [--frequency Hz] [--rate Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--chain 0|1|both] [--discard SAMPLES] output.cs16 [complex-samples [manual]]\n", argv[0]);
+        fprintf(stderr, "Usage: %s --list | [--buffered | --recover] [--ring MiB] [--frequency Hz] [--rate Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--chain 0|1|both] [--discard SAMPLES] output.cs16 [complex-samples [manual]]\n", argv[0]);
         return 1;
     }
     if (argc - argument >= 2 && parse_number(argv[argument + 1], &recorder.limit))
@@ -290,6 +394,10 @@ int main(int argc, char **argv)
     /* Finite buffered reads stay strict; recovery belongs to streamed reads. */
     if (recover && buffered) {
         fprintf(stderr, "--recover streams to the file and cannot be combined with --buffered\n");
+        return 1;
+    }
+    if (ring_mib && buffered) {
+        fprintf(stderr, "--ring applies to streamed recording and cannot be combined with --buffered\n");
         return 1;
     }
     if (recover && snprintf(gaps_path, sizeof(gaps_path), "%s.gaps", argv[argument]) >= (int)sizeof(gaps_path)) {
@@ -413,6 +521,35 @@ int main(int argc, char **argv)
             watching = 1;
         }
     }
+    if (watching && !buffered) {
+        /* Preallocate and touch the whole ring, so the read thread never takes
+         * page faults. A finite recording needs no more than its own length.
+         * Both chains carry twice the samples per sample time. */
+        struct ring *ring = &recorder.ring;
+        uint64_t stream_rate = (rate ? rate : 40000000) * (chain == BIRRIASDR_CHAIN_BOTH ? 2 : 1);
+        int error;
+        ring->capacity = ring_mib ? ring_mib * 1048576 / 4 : stream_rate * RING_DEFAULT_SECONDS;
+        if (recorder.limit && recorder.limit < ring->capacity)
+            ring->capacity = recorder.limit;
+        ring->batch = ring->capacity / 2 < RING_WRITE_SAMPLES ? ring->capacity / 2 + 1 : RING_WRITE_SAMPLES;
+        ring->iq = ring->capacity <= SIZE_MAX / 4 ? malloc((size_t)ring->capacity * 4) : NULL;
+        if (!ring->iq) {
+            fprintf(stderr, "Ring: cannot allocate %llu MiB; choose a smaller --ring\n",
+                    (unsigned long long)(ring->capacity / 262144));
+            result = BIRRIASDR_ERROR_NO_MEMORY;
+        } else {
+            memset(ring->iq, 0, (size_t)ring->capacity * 4);
+            pthread_mutex_init(&ring->lock, NULL);
+            pthread_cond_init(&ring->changed, NULL);
+            error = pthread_create(&writer, NULL, write_ring, &recorder);
+            if (error) {
+                fprintf(stderr, "Writer thread: %s\n", strerror(error));
+                result = BIRRIASDR_ERROR_NO_MEMORY;
+            } else {
+                writing = 1;
+            }
+        }
+    }
     if (watching && buffered) {
         /* Keep disk conversion/I/O out of the finite acquisition. The watcher
          * also cancels callback-free finite reads. Never save failed or
@@ -432,10 +569,11 @@ int main(int argc, char **argv)
             recorder.error = 1;
         }
         recorder.skip = 0;
-        if (!result && !recorder.error)
-            write_iq(iq + (size_t)discard * 2, received - (uint32_t)discard, &recorder);
+        if (!result && !recorder.error &&
+            store_iq(iq + (size_t)discard * 2, received - (uint32_t)discard, &recorder))
+            recorder.error = 1;
         free(iq);
-    } else if (watching) {
+    } else if (writing) {
         result = birriasdr_read_async(dev, record, &recorder, 0, 0);
     }
     /* The watcher owns a borrowed handle: stop and join it before close. */
@@ -443,7 +581,19 @@ int main(int argc, char **argv)
         atomic_store(&watch.done, true);
         pthread_join(watcher, NULL);
     }
+    /* Everything accepted so far still reaches the file, also after a signal. */
+    if (writing) {
+        pthread_mutex_lock(&recorder.ring.lock);
+        recorder.ring.finished = true;
+        pthread_cond_broadcast(&recorder.ring.changed);
+        pthread_mutex_unlock(&recorder.ring.lock);
+        pthread_join(writer, NULL);
+        if (recorder.ring.failed)
+            recorder.error = 1;
+    }
+    free(recorder.ring.iq);
     birriasdr_get_stream_stats(dev, &stats);
+    birriasdr_get_usb_stats(dev, &usb_stats);
     close_result = birriasdr_close(dev);
     if (fclose(recorder.file))
         recorder.error = 1;
@@ -457,8 +607,17 @@ int main(int argc, char **argv)
                         "each chain carries a DC offset to remove before decoding\n");
     if (recover)
         fprintf(stderr, "Recovered %llu gaps, logged in %s\n", (unsigned long long)recorder.gap_count, gaps_path);
+    if (writing)
+        fprintf(stderr, "Ring: peak %llu of %llu MiB; waited for the disk %llu times\n",
+                (unsigned long long)(recorder.ring.peak / 262144),
+                (unsigned long long)(recorder.ring.capacity / 262144),
+                (unsigned long long)recorder.ring.waits);
+    if (usb_stats.completions)
+        fprintf(stderr, "USB: %llu transfers; queue peak %u of %u; parked peak %u; longest gap %.1f ms\n",
+                (unsigned long long)usb_stats.completions, usb_stats.queue_peak, usb_stats.queue_capacity,
+                usb_stats.parked_peak, usb_stats.longest_gap_us / 1000.0);
     fprintf(stderr, "Saved %llu complex samples; stream=%s; firmware state=%u; stage=%d; reset=%s\n",
-             (unsigned long long)recorder.count, birriasdr_strerror(result),
+             (unsigned long long)recorder.written, birriasdr_strerror(result),
              stats.firmware_state, stats.stage, birriasdr_strerror(stats.reset_error));
     return result || close_result || recorder.error ? 1 : 0;
 }

@@ -33,14 +33,26 @@ def run(case,sig=None,options=(),count=None):
         assert 'CLEANUP' in ev and 'WATCH_JOIN' in ev,(name,ev)
         assert ev.index('CLEANUP')<ev.index('WATCH_JOIN')<ev.index('CLOSE'),ev
     if case=='before-read':assert 'CANCEL_STATE' in ev and 'CANCEL_OK' in ev,ev
-    expected=1 if case=='watch-fail' or (sig and '--buffered' in options) else 0
+    expected=1 if case in ('watch-fail','write-fail') or (sig and '--buffered' in options) else 0
     assert rc==expected,(name,rc,expected)
     if sig and '--buffered' in options:
         assert out.stat().st_size==0
         # A cancelled finite read is an interruption, not stale stream data.
         text=(root/(name+'.log')).read_text()
         assert 'Interrupted; buffered recording discarded' in text and 'stream=success' in text,(name,text)
-    if count and not sig:
+    text=(root/(name+'.log')).read_text()
+    if case=='stall':
+        # A small ring and a slow disk: the reader waits, nothing is lost or reordered.
+        import struct
+        data=out.read_bytes();assert len(data)==count*4,(len(data),count*4)
+        got=struct.unpack('<%dh'%(count*2),data)
+        assert all(v==(i&0x7fff if (i&0xffff)<0x8000 else (i&0xffff)-0x10000) for i,v in enumerate(got)),'sequence broken'
+        assert 'Ring: peak 1 of 1 MiB' in text and 'waited for the disk 0 times' not in text,text
+        assert 'Saved %d complex samples'%count in text,text
+    elif case=='write-fail':
+        # A failing disk stops the stream and must not hang a callback waiting for space.
+        assert 'WRITE_FAIL' in ev and 'stream=success' in text,(ev,text)
+    elif count and not sig:
         assert out.stat().st_size==count*4
         # Independent expected byte pattern; --discard=2048 skips one whole block.
         import struct
@@ -58,5 +70,7 @@ run('watch-fail')
 run('finite',options=('--discard','2048'),count=4096)
 run('finite',options=('--buffered','--discard','2048'),count=4096)
 run('recover',options=('--recover',),count=4096)
+run('stall',options=('--ring','1'),count=2048*1024)
+run('write-fail',options=('--ring','1'),count=2048*1024)
 (root/'results.json').write_text(json.dumps(results,indent=2))
 print('PASS all',len(results),'recorder cases; modeled cleanup only, no physical gain assertion')

@@ -278,12 +278,20 @@ cannot be combined with `--buffered`, whose finite reads stay strict. At
 40 MSps the file grows by about 160 MB/s, and by half that with
 `--rate 20000000`.
 
-On the EDUP board over usbipd (2026-10-25), 30 s at 40 MSps to disk and 11 s
-at 20 MSps, stopped with Ctrl-C, recorded no gaps. Recording at 80 MSps is not gap-free:
-about 0.9 gaps per second even into RAM, and up to 85 per
-second once disk writeback throttled after about 20 s of a 30 s recording.
-The recorder converts and writes in the read callback, so its I/O directly
-slows the stream.
+Streamed recordings keep disk I/O off the read thread: the callback copies into
+a preallocated RAM ring and a writer thread converts and writes. `--ring MiB`
+sets the ring size; the default holds four seconds of the stream (640 MiB at
+40 MSps, 1280 MiB at 80 MSps), or the whole recording if that's shorter. A disk
+slower than the stream eventually fills the ring. The callback then waits, and
+the resulting overrun stops the recording, or is logged as a gap with
+`--recover`, so a file never silently skips samples. On exit the recorder prints
+the ring's peak use and how often it waited, plus the USB queue's peak and the
+longest gap between USB transfers (`birriasdr_get_usb_stats()`).
+
+On the EDUP board over usbipd (2026-11-05), 30 s at 80 MSps to disk had 2 and 6
+gaps in two runs, against 1,172 and 1,466 for the previous in-callback recorder
+in the same session. So 80 MSps is close to gap-free, not gap-free: at least some
+of the remaining gaps start on the device. 15 s at 40 MSps had none.
 
 To suppress the PHY's packet-detect blanking (opt-in research setting, see
 [packet-detect suppression](docs/mt7921.md#packet-detect-suppression)):
