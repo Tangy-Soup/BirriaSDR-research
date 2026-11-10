@@ -75,7 +75,13 @@ and bring-up rewrites both fields on every open. The 5 GHz path calibrates
 from 4250 to 6273 MHz, failing at 4249 and 6274 MHz with the same result on
 every repeat. Reception is checked only from 5180 to 5815 MHz: no known
 signal was on air outside that, and every 20 MHz channel from 5955 to
-6255 MHz was quiet. See [mt7921.md](mt7921.md#5-ghz).
+6255 MHz was quiet. See [mt7921.md](mt7921.md#5-ghz). Upstream PR #19
+(open on 8 November 2026) explains the 6273 MHz rail: our band selection is
+the same as upstream's before that PR, which leaves the 2.4 GHz VCO preset
+(`0xc94[7:0]`) in place and doesn't set the 6 GHz synthesizer profile
+(`0xc00[20]`). The PR reports reception from 6135 to 6615 MHz with both
+fields set, on another EDUP board. This fork hasn't ported it, since there's
+no 6 GHz transmitter here to check reception against.
 
 ## 2. Summary
 
@@ -89,6 +95,7 @@ signal was on air outside that, and every 20 MHz channel from 5955 to
 | Two-chain whitened combining adds frames but no new networks | Established | §6 |
 | LNA codes 4 and 5 exist and help; measured gain table in dB | Established | §7 |
 | Chain 0's 2.4 GHz table differs from its October measurement, for an unknown reason. Today's table fits a second unit, other channels and 80 MSps | Established, cause open | §7 |
+| Several RF fields hold the 2.4 GHz LPF code at max(3, p − 3), which matches today's flat-then-rising LPF steps | Model, parked | §7 |
 | Released gain is nearly deaf at 5 GHz, so the Soapy module's automatic mode now runs a slow host gain loop | Established on chain 0 | §7 |
 | 80 MSps works over usbipd with the Mtk79ICAP 2.4 GHz BW80 recipe | Established | §8 |
 | Host USB queue depth, not USB aggregation, sets the gap rate | Established | §8 |
@@ -363,6 +370,40 @@ gave LNA 0, 8.1, 13.8, 19.6, 25.8, 31.8 and LPF 0, 2.1, 4.0, 5.9, 8.0, 9.7, 11.7
 - **The new shape is 5 GHz's shape,** which was already flat at low LPF on
   28 October.
 
+**Some RF fields clamp the LPF code** (8 November, read-only RF snapshots at
+LNA 3 and every LPF code, chain 0, 2437 MHz). The gain mirror at RF port 1
+`0x268` and `0x60c[11:8]` read the requested code, 0 to 8. But port 1
+`0x5f0[11:8]`, `0x608[3:0]` and `0xbd0[3:0]` read 3, 3, 3, 3, 3, 3, 3, 4, 5,
+which is max(3, p − 3) for code p, and `0xbcc` and `0xfa0` also hold one value
+through code 6. A clamped copy of the code gives the measured shape: flat for
+codes 0 to 6, then +2 and +4 dB. This is a fitting model, not a decoded
+register map, and these words may be derived state rather than controls. No RF
+record from October holds them at a low LPF code, so the readback can't show
+when the clamp appeared or whether it was ever absent.
+
+- **Live switching isn't the cause.** Twelve independently started 1.95 s
+  captures in two ABBA blocks at LNA 3 put LPF 4 and 8 at −1.7 and +3.6 dB
+  against LPF 0. October's table predicts +8.0 and +15.6. Each
+  capture's readback showed the same clamped values.
+- **Fresh starts scatter by about ±3 dB** at one code, against 0.1 dB within
+  one live stream. These captures can't tell a per-start gain change from the
+  AP's level changing over minutes, so take dB values from live sweeps.
+- **Other readable state matches October.** The repeatable words of RF ports
+  0 and 1 at LNA 3 / LPF 8 match a 26 October dump except one word that varies
+  anyway. The 56,209 stable PHY words match 26 October's dump and, apart
+  from gain-code and later band fields, 15 October's.
+- **No ROM code writes these words at a constant address.** A search of the
+  boot ROM's 232 direct RF calls and 858 per-chain calls, and of its data
+  tables, found none. Constants were tracked linearly, with some call sites
+  unresolved, so this doesn't show the clamp is fixed in hardware.
+
+This line of work is **parked with the cause unresolved**. Observed: the
+response is flat through LPF 6 and several RF fields follow the clamped
+sequence. Likely: an internal translation contributes. Unknown: what selects
+it, whether it differed in October, and why October's sweeps read steeper. The
+shipped table stays. It reopens with a controlled signal source or a specific
+configuration lead.
+
 The last steep sweep was 24 October and the first flat one 4 November, with no LPF
 sweep at 2.4 GHz in between. So read the SNR results below as measured on the
 October table unless they say otherwise.
@@ -416,7 +457,15 @@ step. With the threshold lowered to force changes, it dropped from 47.2 to 39.9 
 with no gap, held for 237 s without hunting, and climbed back after a retune to a
 quiet channel. The loop holds forced codes, so an application killed mid-stream
 leaves them behind until a replug, which manual mode already did and released mode
-doesn't. Chain 1, both-chain, a killed application and GUI use are untested.
+doesn't. A normal exit leaves the chip clean, because the module stops live
+streams when it unloads. On 10 November the next open succeeded after each of
+these exits, all with the stream still running:
+- SDR++ at 2437 and 5240 MHz, with its window closed
+- gqrx at 2437 MHz with hardware AGC on, quit normally
+- a headless program that called `exit()`
+
+There were no gap warnings during the SDR++ runs. Chain 1, both-chain and a killed application
+are untested.
 
 Implemented as per-chain dB tables (`birriasdr_set_tuner_gain()`,
 `BIRRIASDR_CAP_GAIN_DB`, Soapy overall gain); see
@@ -690,6 +739,16 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 - **Overrun bursts.** Overruns (firmware state 9) occasionally cluster for
   up to about 30 minutes with the host idle, then clear with nothing changed.
   Wait and retry; it isn't the hardware.
+- **usbipd-win grows over days of uptime.** After several days, the Windows
+  `usbipd` process held 15.3 GB of private memory, and 40 MSps streams died
+  after about 40 s with `USB/register I/O failed (stage 2)` and vhci
+  `reset SuperSpeed` messages in `dmesg`, both headless and in SDR++. That
+  looks like a build or adapter fault. Restarting the service (`Restart-Service usbipd` as administrator,
+  then attach again) fixed it with the same build: a 120 s run had no gaps and
+  a 480 s run had one brief burst of three gaps. Its working set stayed near
+  100–125 MB while streaming, so the growth takes days, not one stream. Check
+  it with
+  `tasklist.exe /FI "IMAGENAME eq usbipd.exe"` before debugging gaps.
 - **Forced gain after an unclean exit.** The analog gain override survives a
   WFSYS reset. If a client is killed mid-stream, the next open fails at stage
   6 with "unexpected hardware or receiver state". Replugging clears it. The
@@ -736,7 +795,9 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 - HT frames at MCS 5–7 that still fail on SNR, and whether two-chain
   combining recovers them now that chain 1 is level with chain 0.
 - Why the 2.4 GHz gain table differs from October (§7), and whether it can be
-  changed back, since that would restore about 12 dB of LPF range.
+  changed back, since that would restore about 12 dB of LPF range. The lead is
+  whatever sets the max(3, p − 3) clamp on the LPF code.
+- Why fresh starts at one fixed gain code scatter by about ±3 dB (§7).
 - Two never-decoded 2.4 GHz APs that are still visible at −4 to −8 dB SNR on
   chain 0.
 - Whether the packet-detect, chain-select and gain-table results hold on the
@@ -753,5 +814,5 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 - [w1700k-sdr](https://github.com/h0m3us3r/w1700k-sdr) was the original lead
   for the PHY gain-register layout (credited upstream).
 - Upstream pull requests and issues on BirriaSDR (5 GHz in #8 and #9, other
-  sample-rate approaches in #13–#15, board data in #4 and #6) were useful
-  points of comparison.
+  sample-rate approaches in #13–#15, board data in #4 and #6, 6 GHz in #19)
+  were useful points of comparison.
