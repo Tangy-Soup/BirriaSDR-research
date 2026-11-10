@@ -118,7 +118,7 @@ For more detail, see:
 | Gain | Raw codes for LNA 0 to 5, filter stage 0 to 8 (0 to 15 at 5 GHz) and digital 0 to 12 on each streamed chain, or an overall gain from a measured table of relative dB (0 to 45.8 dB on chain 0 at 2437 MHz, and at 5 GHz 0 to 59.2 dB on chain 0, 0 to 55.1 dB on chain 1 and 0 to 47.2 dB on both chains). The tables were measured on the EDUP board, the 2.4 GHz one also checked at 2412 and 2462 MHz, at 80 MSps and on a second board, and have no absolute dBm reference. At 5 GHz, weak signals need LNA 5 and a filter-stage code of 11 to 14, but strong APs clip at the top codes. See [gain in dB](docs/mt7921.md#gain-in-db) and [5 GHz filter-stage codes](docs/mt7921.md#5-ghz-filter-stage-codes) |
 | Live gain changes | Supported without restarting capture, with a brief settling transient |
 | Automatic gain | The library can release the manual overrides to the chip. The SoapySDR module's automatic mode runs a slow host loop instead (see [SoapySDR module](#soapysdr-module)) |
-| Capture blanking | The PHY packet detector blanks short zero runs into the capture. Opt-in packet-detect suppression (`--pd-n8`) removes them after about 250 ms of settling. Research setting, see [packet-detect suppression](docs/mt7921.md#packet-detect-suppression) |
+| Capture blanking | Capture setup switches off the receiver's frame detectors, which otherwise blank 49-sample zero runs into the capture on chain 0 and, at 5 GHz, chain 1 ([frame detectors off](docs/mt7921.md#frame-detectors-off)). Occasional 7-sample runs can remain at 2.4 GHz. Opt-in packet-detect suppression (`--pd-n8`) also removes those after it settles, which can take over 600 ms. Research setting, see [packet-detect suppression](docs/mt7921.md#packet-detect-suppression) |
 | Frequency accuracy | Uncalibrated, with no ppm correction |
 | Reference clock | On-board 40 MHz crystal |
 | Host interface | Bulk transfers over USB 3.0 at about 161 MB/s |
@@ -138,7 +138,7 @@ upstream `main` at `8ddab14`, as each project documents it:
 | Sample rates | 40 MSps, plus 20 MSps from a 2:1 halfband filter on the host, flat to ±8.5 MHz, with unchanged USB traffic. The 80 MSps rate is experimental and 2.4 GHz only | 10, 20, 40 and 80 MSps from the device. At 10 and 20 MSps the chip packs samples from a faster tap, and 10 MSps halves the USB traffic |
 | Receive chains | Chain 0, chain 1, or both interleaved | Chain 0 |
 | Gain | Raw codes, with filter stage 0 to 15 at 5 GHz, or an overall gain from measured relative dB tables. The Soapy module's automatic mode runs a slow host gain loop | Raw codes, filter stage 0 to 8. Not in dB |
-| Capture blanking | `--pd-n8` removes the zero runs | Not documented |
+| Capture blanking | Frame detectors switched off at every capture, and `--pd-n8` removes the remaining short runs | Not documented on `main`; the frame-detector change is in Flipper's `flipper-devel` |
 | Channel-filtered tap | `--channel-filter` | No. The 10 MSps rate uses a narrower digital filter |
 | SoapySDR module | `driver=birriasdr`, opt-in build flag. Sample-count timestamps, 20 or 40 MHz bandwidth, and settings for blanking suppression, the channel-filtered tap and the restart budget | `driver=birria`, built whenever SoapySDR is installed. All four native rates, with rate changes while streaming. No timestamps or bandwidth control |
 | Network output | None | `birria_udp`, raw CS16 over UDP |

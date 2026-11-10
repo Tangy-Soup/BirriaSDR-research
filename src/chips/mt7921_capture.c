@@ -52,7 +52,6 @@
  * or fix producer wrap. See docs/mt7921.md for the transport overview.
  */
 #include "mt7921.h"
-
 /* ICAP writes consecutive raw14 Q,I pairs into a 256 KiB circular SRAM.
  * The original MCU program later watches its producer pointer and submits
  * serial DMA descriptors referencing that SRAM directly. This host setup
@@ -96,6 +95,19 @@ int mt_configure_capture(birriasdr_dev_t *dev)
     if ((value & 0xc0000) != (dev->rate == MT_RATE_80 ? 0x80000u : 0xc0000u))
         return BIRRIASDR_ERROR_STATE;
     BS_TRY(bs_update32(dev, BS_MMIO, 0x88009004, 0, 0x0f000000));
+    /* Bits 22:21 of 0x83088200 enable two of the receiver's frame detectors. On
+     * each detection the receive path holds a sample, then reads exact zeros
+     * (runs of 49 at 40 MSps), on chain 0 and, at 5 GHz, on chain 1 too: Wi-Fi
+     * frames and noise trigger them up to hundreds of times a second. Clearing
+     * both stops those runs from the first sample, with no settling, which
+     * --pd-n8 needs. Chain 1's copy at 0x83098200 makes no difference. WFSYS
+     * reset sets them again, so there is nothing to restore (after
+     * flipperdevices/BirriaSDR 319f720).
+     */
+    BS_TRY(bs_update32(dev, BS_MMIO, 0x83088200, 0x00600000, 0));
+    BS_TRY(bs_read32(dev, BS_MMIO, 0x83088200, &value));
+    if (value & 0x00600000)
+        return BIRRIASDR_ERROR_STATE;
     return bs_write32(dev, BS_MMIO, 0x80021090, 0x4f1);
 }
 

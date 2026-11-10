@@ -87,7 +87,7 @@ no 6 GHz transmitter here to check reception against.
 
 | Finding | Status | Section |
 | --- | --- | --- |
-| The 0.5–1.4% exact-zero samples come from the PHY packet detector; `0x8300011c[19:16]` = −8 stops them | Established | §3 |
+| The 0.5–1.4% exact-zero samples come from the PHY packet detector; `0x8300011c[19:16]` = −8 stops them after settling, and clearing the frame detectors (`0x83088200[22:21]`) stops the main runs from the first sample | Established | §3 |
 | The adapter's own USB 3 link couples into antenna A; antenna straight out plus foil shielding brings the 2.4 GHz floor down 8–12 dB | Established | §4 |
 | ICAP tap 12 is after the digital channel filter and helps at the 20 MHz profile | Established | §5 |
 | Chain 1 can be captured from the ROM-only bring-up, alone or interleaved with chain 0 | Established | §6 |
@@ -104,7 +104,7 @@ no 6 GHz transmitter here to check reception against.
 | Most OFDM `bad_service` failures are 802.11n HT-mixed frames, not blanking | Established | §10 |
 | Per-symbol pilot slope fitting loses weak OFDM frames | Established | §10 |
 | At 5 GHz the capture floor sits after every analog gain stage, and filter-stage codes 9 to 15 add up to 13 dB on either chain (LPF 14: +7 dB SNR on chain 0, +8 dB on chain 1) | Established | §7, §9 |
-| Chain 0 has no sample blanking at 5 GHz, so packet-detect suppression has nothing to remove there. Chain 1 does blank at 5 GHz | Established | §9 |
+| Chain 0 has no sample blanking at 5 GHz, so packet-detect suppression has nothing to remove there. Chain 1's 5 GHz blanking comes from chain 0's frame detectors, which this fork now switches off | Established | §3, §9 |
 | Weak legacy OFDM frames: a smoothed, L-SIG-aided estimate, smoothed pilot phase, an FCS-gated re-estimate and a lower STF threshold recover about 2.5 dB | Established | §10 |
 | At 5 GHz chain 0 now reaches 50% of beacons about 2 dB short of the stock driver per chain, and about 4 dB short of its two-chain receiver (the first estimate was 15 dB) | Single run, same hour | §9 |
 | With both chains at LPF 14 and combining, the whole receiver needs about 3.6 dB more signal than the stock driver's two-chain receiver at 5 GHz (an earlier cross-day estimate said 1.3 dB) | Single run, same hour | §9 |
@@ -162,6 +162,22 @@ triggers after a short adaptation. We use **−8** (mask `0x000f0000`, value
 Avoid nibble −1 (`0xf`): it lifts the output about 8 dB and decoding
 collapses. `0x83000188` byte 0 = `0x3f` removes only the 48-sample main run,
 not the trigger; it adds 4-sample runs and decodes worse.
+
+**A simpler fix: frame detectors off** (established, 10 November). Flipper
+Devices' fork (`319f720` on `flipperdevices/BirriaSDR` `flipper-devel`)
+clears bits 22:21 of `0x83088200`, which enable two of the receiver's frame
+detectors. This fork now does that at every capture.
+
+- **No settling.** Captures from the first sample at 2437 MHz had no
+  49-sample runs, against 153–331 runs per second with the bits set. In three
+  such captures, `--pd-n8` was still blanking after 215 ms, 523 ms and past 1 s.
+- **Some 7-sample runs remain.** In nine one-second captures: none in four,
+  6 to 18 in four, and 168 in one. Once settled, `--pd-n8` removes those, so
+  it stays as an option.
+- **Recall improved.** In 16 captures in rotated order, beacons went from 161
+  (detectors on) to 179 (off), 181 (`--pd-n8`) and 182 (both), and beacons
+  from the weaker half of the APs from 19 to 30, 30 and 28.
+- **Floor unchanged,** within 1 dB.
 
 Implemented as `birriasdr_set_packet_detect_suppression()` and
 `birria_rx --pd-n8`; see [mt7921.md](mt7921.md#packet-detect-suppression).
@@ -599,8 +615,10 @@ These are early and mostly single runs, made after upstream added 5 GHz.
   has no zero runs of 8 or more samples. A 2.4 GHz capture from the same
   session has about one per millisecond. So `--pd-n8` has nothing to remove on
   chain 0 at 5 GHz, and blanking doesn't explain any chain-0 loss there.
-  Chain 1 does blank at 5 GHz: its captures carry about 20 to 50 exact-zero
-  runs per second at filter stages 8 to 15.
+  Chain 1 does blank at 5 GHz: its captures carried about 20 to 100 exact-zero
+  runs per second. Those come from chain 0's frame detectors: clearing
+  `0x83088200[22:21]` stopped them in every capture, and chain 1's own copy
+  at `0x83098200` made no difference (§3). This fork now clears them.
 - **Stock band registers.** Comparing read-only PHY snapshots under the stock
   driver at channels 36 and 6 found 78 band-dependent fields. BirriaSDR never
   programs 48 of them, and leaves 15 at their 2.4 GHz values. Writing 13 of
@@ -750,8 +768,10 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
   it with
   `tasklist.exe /FI "IMAGENAME eq usbipd.exe"` before debugging gaps.
 - **Forced gain after an unclean exit.** The analog gain override survives a
-  WFSYS reset. If a client is killed mid-stream, the next open fails at stage
-  6 with "unexpected hardware or receiver state". Replugging clears it. The
+  WFSYS reset. If a client was killed mid-stream, the next open used to fail
+  at stage 6 with "unexpected hardware or receiver state" until a replug.
+  Since 10 November, a start that finds that override alone clears it and
+  continues (after Flipper's `7066548`, checked on the EDUP with `kill -9`). The
   Soapy module stops live streams at normal process exit for this reason.
 - **Reading an unmapped PHY page can hang the adapter.** A read of
   `0x830d0000` timed out, the reset timed out too, and the adapter needed a
@@ -782,6 +802,7 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 | Coarse CFO re-estimated from the STF before the found L-LTF | No change at any STF threshold |
 | Moving the OFDM FFT window into the cyclic prefix | Flat within 0.1 dB |
 | The high VCO range on the 2.4 GHz front end, which calibrates to 3000 MHz | No reception. An n41 sync block at 2597 MHz was found on the low range and not on the high range (2 of 2 pairs) (§1) |
+| USB burst 3 on the I/Q endpoint over usbipd (Flipper's RAM patch at `0x7c0531c8` and a port reset) | The value is written, but Windows keeps the configuration descriptor it read at enumeration (`bMaxBurst 0`), through a port reset and a usbipd re-attach, so the host never uses the larger burst |
 | All 16 `0xc00[5:2]` LO-path values with either front end, high VCO range | None received the n41 sync block. Values with `[5:4]` = 3 only give the 5/6-VCO 5 GHz LO (§1) |
 
 ## 13. Open questions
