@@ -109,7 +109,7 @@ int bs_reader_take(struct bs_reader *reader, uint8_t *bytes, size_t *length, uns
         for (unsigned offset = 0; offset < BS_PAYLOAD_BYTES; offset += 4) {
             /* The last packet is deliberately invalid: a gap must discard it
              * before the decoder or any application callback can see it. */
-            bs_put_le32(bytes + 44 + offset, model->generated % 3 ?
+            bs_put_le32(bytes + BS_HEADER_BYTES + offset, model->generated % 3 ?
                 (model->generated << 16) | 7 : UINT32_MAX);
         }
     }
