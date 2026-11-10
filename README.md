@@ -570,7 +570,7 @@ directory.
 | Sample rate | 40 MSps, or 20 MSps through the library's 2:1 halfband (flat to ±8.5 MHz). 20 MSps is single-chain only. Experimental 80 MSps, single chain; `getBandwidth` then reports the 80 MHz profile |
 | Frequency | One `RF` component, retuned live, including across bands. `getFrequencyRange` lists each band separately (2156 or 2190 to 2610 MHz, and 4500 to 6200 MHz on MT7921). A request outside every band, including the gap between them, is logged and leaves the tuner where it was. 80 MSps is refused at 5 GHz |
 | Bandwidth | 20 or 40 MHz, rounded to the nearer one. A change during a stream applies at the next stream start |
-| Gain mode | Automatic runs a slow host loop: it starts at the top analog step, drops at least 6 dB when more than 0.1% of I and Q values clip over 2 s, and rises only after 30 s with headroom to spare. Manual applies the cached codes. The `auto_gain` setting set to `released` restores the older behaviour, where the chip sets the gain. The loop holds forced codes, so an application killed mid-stream leaves them behind, and the dongle then needs a replug. Manual mode has the same limit, released mode does not |
+| Gain mode | Automatic runs a slow host loop: it starts at the top analog step, drops at least 6 dB when more than 0.1% of I and Q values clip over 2 s, and rises only after 30 s with headroom to spare. Manual applies the cached codes. The `auto_gain` setting set to `released` restores the older behaviour, where the chip sets the gain. The loop holds forced codes, so an application killed mid-stream leaves them behind; the next start clears them without a replug, as in manual mode |
 | Gain elements | `LNA` 0 to 5, `LPF` 0 to 8 (0 to 15 at 5 GHz, following the tuned band) and `DIG` 0 to 12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode. While the host loop runs, reads report the codes it holds |
 | Overall gain | The library's measured relative dB table, from 0 to 45.8 dB on chain 0 (0 to 59.2 dB at 5 GHz). A value picks the nearest step's codes, and a value set in automatic mode applies at the next manual mode. While the host loop runs, reads report the gain it holds |
 | Antenna | `RX` only |
@@ -614,9 +614,11 @@ setting up the stream still throw on failure.
 If an application exits while a stream is running without stopping it (SDR++
 does this when its window is closed), the module stops the stream during normal
 process exit, so the library still restores the gain registers before its
-reset. A killed or crashed application skips that cleanup. If manual gain was
-in use, the next start then fails at the gain stage with "unexpected hardware
-or receiver state"; unplug and reconnect the dongle to clear it.
+reset. A killed or crashed application skips that cleanup and leaves the
+forced gain behind. The next start clears the leftover analog override and
+continues. A start that still fails at the gain stage with "unexpected hardware
+or receiver state" found some other forced field; unplug and reconnect the
+dongle to clear it.
 
 ## Source layout and firmware
 

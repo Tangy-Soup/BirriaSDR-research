@@ -279,11 +279,19 @@ static void test_chain_gain(void)
 
     initialize(&model, &dev);
     atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_1);
-    put(&model, 16, 0x768, 0x80000000);   /* left forced by an unclean exit */
+    put(&model, 16, 0x768, 0x80000000);   /* analog force left by a killed process */
+    put(&model, 0, 0x830100c4, 0x00000003);   /* plus a digital force: still refused */
     CHECK(mt_apply_gain(&dev) == BIRRIASDR_ERROR_STATE && !dev.mt7921.gain_saved);
     CHECK(model.written == 0);
     atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_0);   /* chain 0 does not check chain 1 */
     CHECK(mt_apply_gain(&dev) == 0 && dev.mt7921.gain_chains == 1);
+
+    initialize(&model, &dev);
+    atomic_store(&dev.receive_chain, BIRRIASDR_CHAIN_1);
+    put(&model, 16, 0x768, 0x80551234);   /* the analog force alone is cleared */
+    CHECK(mt_apply_gain(&dev) == 0 && dev.mt7921.gain_chains == 2);
+    CHECK(dev.mt7921.gain_baseline[1][3] == 0x00551234);   /* the clean value is restored later */
+    CHECK(mt_restore_gain(&dev) == 0 && get(&model, 16, 0x768) == 0x00551234);
 }
 
 /* The overall-gain steps are ascending for every chain selection, start at the

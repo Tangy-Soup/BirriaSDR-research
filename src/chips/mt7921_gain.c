@@ -245,16 +245,24 @@ int mt_apply_gain(birriasdr_dev_t *dev)
     uint32_t before[2][4] = {{0}}, coarse, values[4];
     unsigned chains = streamed_chains(dev);
     BS_TRY(gain_values(dev, &dev->gain, values));
+    BS_TRY(bs_read32(dev, BS_MMIO, 0x830000d0, &coarse));
+    if ((chains & 1u) && (coarse & (1u << 27)))
+        return BIRRIASDR_ERROR_STATE;
     for (unsigned c = 0; c < 2; ++c) {
         if (!(chains & 1u << c))
             continue;
         BS_TRY(gain_snapshot(dev, c, before[c]));
+        /* A process killed mid-capture cannot restore, and WFSYS reset keeps only
+         * the analog override; every fresh boot reads 0 there. A capture that
+         * finds that override alone clears it and goes on (after
+         * flipperdevices/BirriaSDR 7066548). Any digital force still fails.
+         */
+        if ((before[c][3] & 0x80000000) && !(before[c][0] & 7) &&
+            !(before[c][2] & 0x80000000) && !(coarse & (1u << 27))) {
+            BS_TRY(gain_write(dev, c, 3, 0));
+            BS_TRY(gain_snapshot(dev, c, before[c]));
+        }
         if ((before[c][0] & 7) || (before[c][2] & 0x80000000) || (before[c][3] & 0x80000000))
-            return BIRRIASDR_ERROR_STATE;
-    }
-    if (chains & 1u) {
-        BS_TRY(bs_read32(dev, BS_MMIO, 0x830000d0, &coarse));
-        if (coarse & (1u << 27))
             return BIRRIASDR_ERROR_STATE;
     }
     memcpy(dev->mt7921.gain_baseline, before, sizeof(before));
