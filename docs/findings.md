@@ -71,17 +71,20 @@ block was found on the low range in runs before and after. On the high range
 it was found under none of the 16 `0xc00[5:2]` LO-path values with either
 front end (32 runs). The only activity on the high range was wideband noise
 bursts timed to Wi-Fi beacons. These overrides came from a research build,
-and bring-up rewrites both fields on every open. The 5 GHz path calibrates
-from 4250 to 6273 MHz, failing at 4249 and 6274 MHz with the same result on
-every repeat. Reception is checked only from 5180 to 5815 MHz: no known
-signal was on air outside that, and every 20 MHz channel from 5955 to
-6255 MHz was quiet. See [mt7921.md](mt7921.md#5-ghz). Upstream PR #19
-(open on 8 November 2026) explains the 6273 MHz rail: our band selection is
-the same as upstream's before that PR, which leaves the 2.4 GHz VCO preset
-(`0xc94[7:0]`) in place and doesn't set the 6 GHz synthesizer profile
-(`0xc00[20]`). The PR reports reception from 6135 to 6615 MHz with both
-fields set, on another EDUP board. This fork hasn't ported it, since there's
-no 6 GHz transmitter here to check reception against.
+and bring-up rewrites both fields on every open. Before 6 GHz support, the
+5 GHz path calibrated from 4250 to 6273 MHz, failing at 4249 and 6274 MHz with
+the same result on every repeat. Upstream PR #19 explains that upper rail: band
+selection left the 2.4 GHz VCO preset (`0xc94[7:0]`) in place and didn't set the
+6 GHz synthesizer profile (`0xc00[20]`). This fork has ported the PR (11 November
+2026): high-band tunes set the preset to `0x15` below 6195 MHz and `0x16` above,
+tunes from 5925 MHz set `0xc00[20]`, and the high band runs to 6615 MHz. On this
+unit every 25 MHz step from 5800 to 7200 MHz now calibrates, the noise floor is
+flat to 7165 MHz, 5 GHz floor and beacon decodes didn't change with the preset
+moving from `0x14` to `0x15`, and 120 live retunes across 5 and 6 GHz all
+succeeded. Reception is still checked here only from 5180 to 5815 MHz: no 6 GHz
+transmitter is in range. The PR's author received a Wi-Fi 7 access point from
+6135 to 6615 MHz on another EDUP board, and a Flipper One's onboard MT7921
+decoded a test transmitter up to 7200 MHz. See [mt7921.md](mt7921.md#5-ghz-and-6-ghz).
 
 ## 2. Summary
 
@@ -100,7 +103,7 @@ no 6 GHz transmitter here to check reception against.
 | 80 MSps works over usbipd with the Mtk79ICAP 2.4 GHz BW80 recipe | Established | §8 |
 | Host USB queue depth, not USB aggregation, sets the gap rate | Established | §8 |
 | A writer thread with a RAM ring takes 80 MSps recording to disk from over 1,000 gaps in 30 s to single digits | Single comparison | §8 |
-| The 2.4 GHz synthesizer calibrates from 2171 to 2652 MHz on this unit. The high VCO range calibrates beyond that but receives nothing under any LO-path value. The 5 GHz path calibrates from 4250 to 6273 MHz, but reception is checked from 5180 to 5815 MHz only | Established | §1, §12 |
+| The 2.4 GHz synthesizer calibrates from 2171 to 2652 MHz on this unit. The high VCO range calibrates beyond that but receives nothing under any LO-path value. With upstream PR #19 ported, the high band calibrates from 4250 to at least 7200 MHz and runs to 6615 MHz. Reception is checked here from 5180 to 5815 MHz only, and 6 GHz reception rests on two other units | Established | §1, §12 |
 | Most OFDM `bad_service` failures are 802.11n HT-mixed frames, not blanking | Established | §10 |
 | Per-symbol pilot slope fitting loses weak OFDM frames | Established | §10 |
 | At 5 GHz the capture floor sits after every analog gain stage, and filter-stage codes 9 to 15 add up to 13 dB on either chain (LPF 14: +7 dB SNR on chain 0, +8 dB on chain 1) | Established | §7, §9 |

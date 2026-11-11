@@ -46,7 +46,7 @@ anything, try the rough [proof of concept](#proof-of-concept).
 >
 > This is experimental software. The tested board starts from a channel 6
 > initialization profile, and the library tunes 2156 to 2610 MHz and 4500 to
-> 6200 MHz. Sensitivity across those ranges, frequency accuracy and gain are not
+> 6615 MHz. Sensitivity across those ranges, frequency accuracy and gain are not
 > calibrated. Use at your own risk.
 
 https://github.com/user-attachments/assets/64e9fbbd-1f16-4c7b-905c-5624b9c574b7
@@ -86,7 +86,7 @@ Upstream's tested hardware is the **COMFAST MT7961/MT7921AU dongle
 (`0e8d:7961`). Both pair an MT7961 digital die with an MT7972 analog die. By default the
 receiver is centered on Wi-Fi channel 6 (nominally 2437 MHz) and uses receive
 chain 0 at 40 million complex samples per second. The library can retune
-anywhere in the 2156 to 2610 MHz and 4500 to 6200 MHz bands, even while
+anywhere in the 2156 to 2610 MHz and 4500 to 6615 MHz bands, even while
 streaming and across bands. At 40 MSps it
 pairs the **40 MHz analog filter with the matching digital bandwidth setting**
 by default. Select `--bandwidth 20000000` to use the narrower analog/digital
@@ -107,7 +107,7 @@ For more detail, see:
 | Parameter | Current value |
 | --- | --- |
 | Hardware | COMFAST dongle `3574:6211`, or a board with MediaTek's generic ID `0e8d:7961`, with an MT7961 digital die and an MT7972 analog die |
-| Frequency tuning | 2156 to 2610 MHz, or 2190 to 2610 MHz on generic-ID boards, and 4500 to 6200 MHz, including live changes and band switches. Sensitivity is unverified; 5 GHz reception was checked from 5180 to 5815 MHz |
+| Frequency tuning | 2156 to 2610 MHz, or 2190 to 2610 MHz on generic-ID boards, and 4500 to 6615 MHz, including live changes and band switches. Sensitivity is unverified; reception was checked here from 5180 to 5815 MHz, and from 6135 to 6615 MHz on other units (upstream PR #19) |
 | Tuning step | Nominally 28.61 Hz, using the full 20-bit fraction. Requests are in whole hertz with no Wi-Fi channel restriction. The physical response to fine steps is still unmeasured |
 | Sample rate | 40 MSps complex capture. 20 MSps output is also available through a 2:1 halfband on the host (`--rate 20000000`), flat to ±8.5 MHz; USB traffic is unchanged. Experimental: 80 MSps (`--rate 80000000`), single chain and 2.4 GHz only, 320 MB/s over USB, with the BW80 filter profile. On the EDUP board over usbipd it gave flat-to-±30 MHz captures that decode channels 1–11 at once; 1 s finite captures usually succeed, and continuous reads see about one recovered gap every 20–30 s with the default 192 queued USB transfers. The sample clock and LO share one reference within 0.5 ppm (measured against Wi-Fi beacon timestamps), so 40 MSps is exact up to the crystal's tolerance |
 | Receive filter profiles | Nominal 20 or 40 MHz, selected while idle. Both keep 40 MSps and the same USB traffic; default is 40 MHz. Opt-in `--channel-filter` captures after the PHY's digital channel filter, which follows the profile: at 20 MHz it lowered the floor 10–15 MHz off centre by about 13 dB. See [channel filter](docs/mt7921.md#channel-filter) |
@@ -568,7 +568,7 @@ directory.
 | Channels | RX 0 is chain 0. With chain selection, RX 1 is chain 1, and a stream on channels `{0, 1}` captures both chains, deinterleaved into one buffer per channel. Chain 1 and both chains are research settings, as above |
 | Formats | Native `CS16` with full scale 8192, or `CF32` scaled to ±1 |
 | Sample rate | 40 MSps, or 20 MSps through the library's 2:1 halfband (flat to ±8.5 MHz). 20 MSps is single-chain only. Experimental 80 MSps, single chain; `getBandwidth` then reports the 80 MHz profile |
-| Frequency | One `RF` component, retuned live, including across bands. `getFrequencyRange` lists each band separately (2156 or 2190 to 2610 MHz, and 4500 to 6200 MHz on MT7921). A request outside every band, including the gap between them, is logged and leaves the tuner where it was. 80 MSps is refused at 5 GHz |
+| Frequency | One `RF` component, retuned live, including across bands. `getFrequencyRange` lists each band separately (2156 or 2190 to 2610 MHz, and 4500 to 6615 MHz on MT7921). A request outside every band, including the gap between them, is logged and leaves the tuner where it was. 80 MSps is refused at 5 GHz |
 | Bandwidth | 20 or 40 MHz, rounded to the nearer one. A change during a stream applies at the next stream start |
 | Gain mode | Automatic runs a slow host loop: it starts at the top analog step, drops at least 6 dB when more than 0.1% of I and Q values clip over 2 s, and rises only after 30 s with headroom to spare. Manual applies the cached codes. The `auto_gain` setting set to `released` restores the older behaviour, where the chip sets the gain. The loop holds forced codes, so an application killed mid-stream leaves them behind; the next start clears them without a replug, as in manual mode |
 | Gain elements | `LNA` 0 to 5, `LPF` 0 to 8 (0 to 15 at 5 GHz, following the tuned band) and `DIG` 0 to 12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode. While the host loop runs, reads report the codes it holds |

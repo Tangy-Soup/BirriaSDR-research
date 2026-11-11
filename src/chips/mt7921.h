@@ -37,11 +37,18 @@
  */
 #define MT_RF_MIN_HZ UINT64_C(2156000000)
 #define MT_RF_MAX_HZ UINT64_C(2610000000)
-/* 5 GHz command limits inside the observed calibration rails near 4.3 and
- * 6.31 GHz. Reception has been verified only from 5250 to 5815 MHz.
+/* High-band (5 and 6 GHz) command limits above the observed calibration rail
+ * near 4.3 GHz. The rail near 6.31 GHz moves out to at least 7125 MHz once the
+ * VCO preset in 0xc94[7:0] is raised, but calibration passing does not prove
+ * the LO arrived. Reception has been verified from 5180 to 5815 MHz on this
+ * fork's EDUP and from 6135 to 6615 MHz on other units (upstream PR #19), so the
+ * limit stops at 6615 MHz, the last channel verified there.
  */
 #define MT_RF_5G_MIN_HZ UINT64_C(4500000000)
-#define MT_RF_5G_MAX_HZ UINT64_C(6200000000)
+#define MT_RF_5G_MAX_HZ UINT64_C(6615000000)
+#define MT_RF_PRESET_STEP_HZ UINT64_C(6195000000)
+/* Start of the 6 GHz band, where the vendor firmware sets 0xc00[20]. */
+#define MT_RF_6G_PROFILE_HZ UINT64_C(5925000000)
 #define MT_RF_FRACTION_BITS 20u
 /* Dense ICAP rates: 0x830ad448[19:18] = 3 or 2. 80 MSps is experimental and
  * single-chain only; it uses the BW80 filter profile (mt7921_filter.c).
@@ -70,6 +77,7 @@ struct mt_2g_tuning {
     uint32_t word, calibration_cycles;
     uint64_t nominal_hz_num;
     uint32_t nominal_hz_den;
+    uint8_t preset; /* High-band VCO preset for 0xc94[7:0]; 0 leaves it alone. */
 };
 
 int mt_plan_2g(uint64_t frequency_hz, unsigned fraction_bits, struct mt_2g_tuning *plan);
