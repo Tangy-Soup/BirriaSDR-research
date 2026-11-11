@@ -292,6 +292,11 @@ channel, the estimated slot-1 delay and noise correlation. It implies
   - **Five 1 s both-chain 5 GHz recordings:** the union goes from 217 to 243
     valid frames, and no frame is lost. A weak channel-36 AP went from 1 to
     9 beacons a second.
+  - **Same hour against the stock driver** (25 APs on four 5 GHz channels):
+    the union of all branches needs about 2.0 dB more signal than stock's
+    two-chain receiver, against 3.6 dB before `fd`. Alone, `mrc` is 4.2 dB
+    short and `fd` 2.4 dB. See
+    [findings §9](../../docs/findings.md#9-5-ghz-observations).
   - **Cost:** 44 to 87 s per 1 s recording for all four branches (single
     thread, nice 19).
   - **Only at 5 GHz.** On a busy 2.4 GHz channel-11 recording (with blanking

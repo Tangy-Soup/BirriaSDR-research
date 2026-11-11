@@ -104,10 +104,10 @@ no 6 GHz transmitter here to check reception against.
 | Most OFDM `bad_service` failures are 802.11n HT-mixed frames, not blanking | Established | §10 |
 | Per-symbol pilot slope fitting loses weak OFDM frames | Established | §10 |
 | At 5 GHz the capture floor sits after every analog gain stage, and filter-stage codes 9 to 15 add up to 13 dB on either chain (LPF 14: +7 dB SNR on chain 0, +8 dB on chain 1) | Established | §7, §9 |
-| Chain 0 has no sample blanking at 5 GHz, so packet-detect suppression has nothing to remove there. Chain 1's 5 GHz blanking comes from chain 0's frame detectors, which this fork now switches off | Established | §3, §9 |
+| At 5 GHz the frame detectors blank chain 1, and on channels 149 and 161 both chains together. This fork now switches them off: about 0.4 dB on chain 0 and no significant change for the whole receiver | Established | §3, §9 |
 | Weak legacy OFDM frames: a smoothed, L-SIG-aided estimate, smoothed pilot phase, an FCS-gated re-estimate and a lower STF threshold recover about 2.5 dB | Established | §10 |
 | At 5 GHz chain 0 now reaches 50% of beacons about 2 dB short of the stock driver per chain, and about 4 dB short of its two-chain receiver (the first estimate was 15 dB) | Single run, same hour | §9 |
-| With both chains at LPF 14 and combining, the whole receiver needs about 3.6 dB more signal than the stock driver's two-chain receiver at 5 GHz (an earlier cross-day estimate said 1.3 dB) | Single run, same hour | §9 |
+| With both chains at LPF 14 and combining, the whole receiver needs about 2 dB more signal than the stock driver's two-chain receiver at 5 GHz (3.6 dB before per-subcarrier combining, and 1.3 dB in an earlier cross-day estimate) | Single run, same hour | §9 |
 | Combining the two chains per subcarrier recovers about 0.9 dB of that on weak 5 GHz frames | Established on noise injection, single run live | §10 |
 
 ## 3. Sample blanking is the PHY packet detector
@@ -178,6 +178,10 @@ detectors. This fork now does that at every capture.
   (detectors on) to 179 (off), 181 (`--pd-n8`) and 182 (both), and beacons
   from the weaker half of the APs from 19 to 30, 30 and 28.
 - **Floor unchanged,** within 1 dB.
+- **At 5 GHz,** two-chain captures with the detectors on blanked both chains
+  together on channels 149 and 161 and not on 36 or 48. Switching them off
+  removed every run and gained chain 0 about 0.4 dB, but made no significant
+  difference to the whole receiver (§9).
 
 Implemented as `birriasdr_set_packet_detect_suppression()` and
 `birria_rx --pd-n8`; see [mt7921.md](mt7921.md#packet-detect-suppression).
@@ -606,19 +610,41 @@ These are early and mostly single runs, made after upstream added 5 GHz.
     The losses sit at APs we hear at −3 to +3 dB SNR on chain 0. On channel
     161 we beat stock on every AP. The broadband combination behind
     `--combine` was part of the loss (§10).
+  - **Per-subcarrier combining closed most of that** (10–11 November). A
+    repeat of the sandwich (25 APs, the same four channels, both chains at
+    LPF 14, with the frame detectors on and off in back-to-back pairs) put the
+    union of all `--combine` branches **2.0 dB [−0.1, 6.2]** short of stock
+    with the detectors off, and 2.3 dB with them on. The time-domain `mrc`
+    branch alone stood where it was (4.2 dB against 4.3), and the
+    per-subcarrier `fd` branch (§10), which the 2 November decode lacked, at
+    2.4 dB. Stock again decoded almost every AP, so the upper CI edge stays
+    loose. The loss now sits at the weakest APs on channel 149, about −96 to
+    −97 dBm on stock's chain 0, where stock decodes 72–77% of beacons and we
+    6–13%. We still beat stock on all of channel 161. The channel-36 APs
+    that cost us on 2 November were about 8 dB stronger this time, so this
+    run doesn't retest them.
   - **Some APs decode worse than their SNR suggests.** Two APs at about
     4.4 dB L-LTF SNR decode only 9 to 13%, where another AP at 3.4 dB decodes
     76%. A stronger AP whose data symbols don't match its own L-LTF channel
     (its estimate costs 1.45 dB even at 21 dB SNR) behaves the same way.
-- **No sample blanking at 5 GHz on chain 0.** Every chain-0 5 GHz capture
-  checked (5180, 5240, plain and with packet-detect suppression, across days)
-  has no zero runs of 8 or more samples. A 2.4 GHz capture from the same
-  session has about one per millisecond. So `--pd-n8` has nothing to remove on
-  chain 0 at 5 GHz, and blanking doesn't explain any chain-0 loss there.
-  Chain 1 does blank at 5 GHz: its captures carried about 20 to 100 exact-zero
-  runs per second. Those come from chain 0's frame detectors: clearing
-  `0x83088200[22:21]` stopped them in every capture, and chain 1's own copy
-  at `0x83098200` made no difference (§3). This fork now clears them.
+- **Blanking at 5 GHz depends on the channel.** Every chain-0 capture
+  checked at 5180 and 5240 MHz (plain and with packet-detect suppression,
+  across days) has no zero runs of 8 or more samples. A 2.4 GHz capture from
+  the same session has about one per millisecond. So `--pd-n8` has nothing to
+  remove there. Chain 1 does blank at 5 GHz: its captures carried about 20 to
+  100 exact-zero runs per second. Those come from chain 0's frame detectors:
+  clearing `0x83088200[22:21]` stopped them in every capture, and chain 1's
+  own copy at `0x83098200` made no difference (§3). This fork now clears them.
+  - **Channels 149 and 161 blank both chains.** In two-chain captures with
+    the detectors on (10–11 November, 8 per channel), channels 149 and 161
+    carried 20 to 74 runs of 46–47 samples per second, on both chains at the
+    same instants, while 36 and 48 had none. With the detectors off, no
+    capture had any.
+  - **It wasn't the gap.** Paired on/off captures over 23 APs put chain 0
+    0.37 dB [0.10, 0.72] better with the detectors off, and the whole
+    receiver 0.29 dB [−0.24, 1.44] better, about 1% more beacons. The blanked
+    fraction is below 1e-4 of samples, and channels 149 and 161 aren't where
+    we lose most.
 - **Stock band registers.** Comparing read-only PHY snapshots under the stock
   driver at channels 36 and 6 found 78 band-dependent fields. BirriaSDR never
   programs 48 of them, and leaves 15 at their 2.4 GHz values. Writing 13 of
@@ -808,11 +834,14 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 ## 13. Open questions
 
 - Why the 20 MHz tap-12 edge alternates between two widths across captures.
-- The remaining 5 GHz gap: about 3.6 dB as a whole receiver in the same
-  hour (§9), less the 0.9 dB the per-subcarrier branch recovers (§10), not
-  yet re-measured against stock with that branch. Per chain, APs whose data
-  symbols don't match their L-LTF channel, and about 1.3 dB of floor still
-  above thermal.
+- The remaining 5 GHz gap: about 2 dB [−0.1, 6.2] as a whole receiver in
+  the same hour (§9), mostly at the weakest APs on channel 149. Per chain, APs
+  whose data symbols don't match their L-LTF channel, and about 1.3 dB of
+  floor still above thermal.
+- Why one channel-48 AP pair decodes better with the frame detectors off
+  (union 90/93% against 73/88%) when neither arm has zero runs on that
+  channel. The detectors may hold or alter samples in ways a zero-run count
+  doesn't see.
 - HT frames at MCS 5–7 that still fail on SNR, and whether two-chain
   combining recovers them now that chain 1 is level with chain 0.
 - Why the 2.4 GHz gain table differs from October (§7), and whether it can be
