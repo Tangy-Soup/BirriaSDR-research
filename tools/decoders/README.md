@@ -18,6 +18,7 @@ Offline decoders for `.cs16` files recorded by `birria_rx` (40 MSps, interleaved
 | `spectrum.py` | Average spectrum plus spectrogram PNG. |
 | `survey.py` | Stitches several captures into one band panorama and lists the emissions found. The centre frequency comes from the file name (`s2174.cs16`). |
 | `cs16.py` | Shared loader and frequency shift. |
+| `resample.py` | Front-end resampler (numba, bit-identical to SciPy's `resample_poly`) and overlap-add FIR. |
 
 ## Setup
 
@@ -32,9 +33,24 @@ falls back to the Python version.
 
 ## Speed
 
-On a busy 2.4 GHz channel, the remaining cost is the front end: the
-`resample_poly` 2:1 and 11:10 resamplers and the DSSS `fftconvolve` filters
-take roughly 15 CPU-seconds per second of 40 MSps signal, even on a quiet channel.
+The front end (`resample.py`) is the 2:1 and 11:10 resamplers, the DSSS channel
+filter and Barker correlator, and the `--combine` filters. It costs about 2.7 CPU-seconds per
+second of 40 MSps signal, against 8.6 before 2026-11-12:
+- **Resamplers:** `resample.resample_poly` is a numba version of SciPy's
+  `resample_poly`. It is bit-identical, because each output is summed in SciPy's
+  order. It runs 3–5 times faster, by summing 16 outputs of one filter phase side by side.
+- **Filters:** `resample.fir` convolves by overlap-add (`oaconvolve`), not with
+  one FFT as long as the window. It is about 4 times faster and slightly closer to
+  a double-precision convolution. Results differ from `fftconvolve` only in
+  single-precision rounding.
+
+On an 8-file regression set, every valid frame, status and record is unchanged.
+Only float diagnostics move: DSSS `cfo_hz` by under 1 Hz, and the two-chain
+`ltf_match` and noise figures in the fourth decimal. Wall time: 2 s on channel 11
+went from 60 to 43 s, a 1 s two-chain `--combine` file from 37 to 19 s, and 0.37 s
+on channel 1 from 7.4 to 5.2 s. What remains is per-packet work: DSSS symbol timing
+and RAKE, OFDM candidates, and about 1.5 s of start-up.
+
 `--jobs N` decodes N half-second windows in parallel forked processes. Windows are
 independent, so the output is identical to `--jobs 1`. Each worker holds one window,
 about 1.5 GB at peak on a busy channel. With 7 GB of RAM, use 2–3.
@@ -382,8 +398,8 @@ Record with `manual` gain so that levels are real:
   is experimental and requires `--cck`. A VHT/HE transmission can have a valid
   legacy SIGNAL field but still fail legacy payload decoding. Such failures
   remain unverified.
-- Decoding runs well below real time: a busy channel still takes about 20 single-core seconds per
-  second of signal (see Speed).
+- Decoding runs well below real time: a busy 2.4 GHz channel still takes about 15–22 single-core
+  seconds per second of signal (see Speed).
 - Captures are short observations; weak APs, collisions, fading, receiver blanking and interference can still prevent discovery. This is not a calibrated spectrum analyzer or a complete replacement for a normal Wi-Fi scan.
 
 ## Validation

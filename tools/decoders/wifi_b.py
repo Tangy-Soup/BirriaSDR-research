@@ -32,6 +32,9 @@ SUBTYPES = {(0, 0): "assoc-req", (0, 1): "assoc-resp", (0, 4): "probe-req", (0, 
 CHANNELS = (*range(1, 15), *range(32, 69, 4), *range(96, 145, 4), *range(149, 178, 4))
 
 
+LOWPASS_44 = signal.firwin(101, 10e6, fs=44e6).astype(np.float32)   # DSSS channel filter at 44 MSps
+
+
 def channel_mhz(ch):
     if ch not in CHANNELS:
         raise ValueError(f'Unknown 20 MHz Wi-Fi channel {ch}')
@@ -482,8 +485,8 @@ def decode_channel(x, center, ch, threshold_db=6, min_us=60, packets=None, quiet
     if abs(off) > 9e6:
         print(f"warning: channel {ch} is {off / 1e6:+.0f} MHz from centre; part of it is outside the capture")
     y = resample.resample_poly(shift(x, off), 11, 10)
-    y = signal.fftconvolve(y, signal.firwin(101, 10e6, fs=44e6).astype(np.float32), "same").astype(np.complex64)
-    c = signal.fftconvolve(y, np.repeat(BARKER, SPC)[::-1], "full")[SPS - 1:].astype(np.complex64)
+    y = resample.fir(y, LOWPASS_44, "same")
+    c = resample.fir(y, np.repeat(BARKER, SPC)[::-1], "full")[SPS - 1:]
     zero44 = None
     if recover:
         zero40 = (x == 0)

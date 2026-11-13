@@ -27,6 +27,7 @@ import numpy as np
 from scipy import signal
 
 from cs16 import FS, load, shift
+import resample
 
 BLOCK = 400                    # 10 us statistics blocks
 HALF = 5                       # signal covariance over +/-5 blocks (110 us)
@@ -42,7 +43,7 @@ def fractional_delay(x, d, taps=48):
         return x
     n = np.arange(-taps, taps + 1)
     h = np.sinc(n - d) * np.kaiser(len(n), 8)
-    return signal.fftconvolve(x, (h / h.sum()).astype(np.float32), 'same').astype(np.complex64)
+    return resample.fir(x, (h / h.sum()).astype(np.float32), 'same')
 
 
 def _smooth(v, half):
@@ -109,7 +110,7 @@ class Combiner:
         x0 = load(self.path, lo, hi - lo, self.dc_block, slot=0, of=2)
         x1 = load(self.path, lo, hi - lo, self.dc_block, slot=1, of=2)
         live = (x0 != 0) & (x1 != 0)
-        y0, y1 = (signal.fftconvolve(shift(x, self.offset_hz), LOWPASS, 'same').astype(np.complex64)
+        y0, y1 = (resample.fir(shift(x, self.offset_hz), LOWPASS, 'same')
                   for x in (x0, x1))
         y1 = fractional_delay(y1, delay)
         a, b = start - lo, end - lo
