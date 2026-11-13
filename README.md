@@ -49,6 +49,11 @@ or GNU Radio, build the [SoapySDR module](#soapysdr-module).
 > 6615 MHz. Sensitivity across those ranges, frequency accuracy and gain are not
 > calibrated. Use at your own risk.
 
+![SDR++ showing Wi-Fi bursts from 2.417 to 2.457 GHz in its spectrum and waterfall](docs/images/sdrpp-2437.png)
+
+*SDR++ through the [SoapySDR module](#soapysdr-module) with automatic gain,
+tuned to Wi-Fi channel 6 (2437 MHz) at 40 MSps.*
+
 ## Background
 
 Wi-Fi chipsets contain a complete wideband receiver. An analog front end tunes,
