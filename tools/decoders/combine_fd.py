@@ -33,6 +33,7 @@ from scipy import signal
 
 import wifi_ofdm as W
 from cs16 import shift
+import resample
 
 K = W.ACTIVE % 64
 D = W.DATA % 64
@@ -173,7 +174,7 @@ def decode_channel(x0, x1, xb, center, channel, noise, threshold=0.5):
     off = (W.channel_mhz(channel) - center) * 1e6
     if abs(off) > 9e6:
         raise ValueError('Channel is too far from capture center for a complete 20 MHz channel')
-    y0, y1, yb = (signal.resample_poly(shift(x, off), 1, 2).astype(np.complex64) for x in (x0, x1, xb))
+    y0, y1, yb = (resample.resample_poly(shift(x, off), 1, 2) for x in (x0, x1, xb))
     packets, candidates, previous = [], 0, -1000
     for at, cfo in W.detect_stf(yb, threshold):
         candidates += 1

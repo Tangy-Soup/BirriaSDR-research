@@ -15,6 +15,7 @@ import numpy as np
 from scipy import signal
 
 from cs16 import load, shift
+import resample
 from wifi_b import CHANNELS, channel_mhz, describe, nearest_channel
 
 FS = 20_000_000
@@ -689,7 +690,7 @@ def decode_channel(x, center, channel, threshold=0.5):
     off = (channel_mhz(channel) - center) * 1e6
     if abs(off) > 9e6:
         raise ValueError('Channel is too far from capture center for a complete 20 MHz channel')
-    y = signal.resample_poly(shift(x, off), 1, 2).astype(np.complex64)
+    y = resample.resample_poly(shift(x, off), 1, 2)
     packets, candidates, previous = [], 0, -1000
     for at, cfo in detect_stf(y, threshold):
         candidates += 1

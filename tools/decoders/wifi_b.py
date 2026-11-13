@@ -12,6 +12,7 @@ import numpy as np
 from scipy import signal
 import wifi_cck
 import dsss_recover
+import resample
 
 from cs16 import load, shift
 
@@ -480,7 +481,7 @@ def decode_channel(x, center, ch, threshold_db=6, min_us=60, packets=None, quiet
     off = (channel_mhz(ch) - center) * 1e6
     if abs(off) > 9e6:
         print(f"warning: channel {ch} is {off / 1e6:+.0f} MHz from centre; part of it is outside the capture")
-    y = signal.resample_poly(shift(x, off), 11, 10).astype(np.complex64)
+    y = resample.resample_poly(shift(x, off), 11, 10)
     y = signal.fftconvolve(y, signal.firwin(101, 10e6, fs=44e6).astype(np.float32), "same").astype(np.complex64)
     c = signal.fftconvolve(y, np.repeat(BARKER, SPC)[::-1], "full")[SPS - 1:].astype(np.complex64)
     zero44 = None
