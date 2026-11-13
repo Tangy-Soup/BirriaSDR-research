@@ -6,6 +6,7 @@ Only MAC frames with a correct FCS are accepted as identified Wi-Fi traffic.
 """
 import argparse
 from collections import Counter
+from functools import lru_cache
 import json
 from pathlib import Path
 import zlib
@@ -135,8 +136,8 @@ _SIGNS = np.array([[[2 * (int(v & poly).bit_count() & 1) - 1
                      for poly in (0o155, 0o117)] for v in row] for row in _REG])
 
 
-def viterbi(soft, terminated=True):
-    """Soft decision K=7 rate-1/2 Viterbi; zero means a punctured erasure."""
+def _viterbi_python(soft, terminated=True):
+    """Reference implementation (and fallback without numba): about 6 µs per step."""
     metric = np.full(64, -1e30)
     metric[0] = 0
     trace = np.empty((len(soft), 64), dtype=np.uint8)
@@ -154,6 +155,74 @@ def viterbi(soft, terminated=True):
     return bits
 
 
+try:
+    from numba import njit
+except ImportError:          # pragma: no cover - numba is in requirements.txt
+    njit = None
+
+if njit is not None:
+    _PREV_I = np.ascontiguousarray(_PREV, dtype=np.int64)
+    _SIGNS_F = np.ascontiguousarray(_SIGNS, dtype=np.float64)
+
+    @njit(cache=True, nogil=True)
+    def _viterbi_kernel(soft, prev, signs, terminated):
+        # Same arithmetic, order and tie-breaking as _viterbi_python, so the
+        # decoded bits are identical: float64 branch metrics a*s0 + b*s1,
+        # choice = scores[1] > scores[0], metric normalized to its maximum.
+        n = soft.shape[0]
+        metric = np.full(64, -1e30)
+        metric[0] = 0.0
+        new = np.empty(64)
+        trace = np.empty((n, 64), dtype=np.uint8)
+        for t in range(n):
+            a = soft[t, 0]
+            b = soft[t, 1]
+            best = -np.inf
+            for s in range(64):
+                s0 = metric[prev[0, s]] + (signs[0, s, 0] * a + signs[0, s, 1] * b)
+                s1 = metric[prev[1, s]] + (signs[1, s, 0] * a + signs[1, s, 1] * b)
+                if s1 > s0:
+                    trace[t, s] = 1
+                    new[s] = s1
+                else:
+                    trace[t, s] = 0
+                    new[s] = s0
+                if new[s] > best:
+                    best = new[s]
+            for s in range(64):
+                metric[s] = new[s] - best
+        state = 0
+        if not terminated:
+            state = int(np.argmax(metric))
+        bits = np.empty(n, dtype=np.uint8)
+        for t in range(n - 1, -1, -1):
+            bits[t] = state & 1
+            state = prev[trace[t, state], state]
+        return bits
+
+
+def viterbi(soft, terminated=True):
+    """Soft decision K=7 rate-1/2 Viterbi; zero means a punctured erasure."""
+    if njit is None:
+        return _viterbi_python(soft, terminated)
+    soft = np.ascontiguousarray(np.asarray(soft, dtype=np.float64).reshape(-1, 2))
+    return _viterbi_kernel(soft, _PREV_I, _SIGNS_F, bool(terminated))
+
+
+# A payload whose SERVICE field fails is rejected from a truncated decode of
+# its first SERVICE_CHECK_STEPS trellis steps (traceback from the best state)
+# instead of decoding all of it. Applied to HT payloads longer than
+# SERVICE_CHECK_MIN, where most decode time went to long A-MPDUs that fail.
+SERVICE_CHECK_STEPS = 16 + 192
+SERVICE_CHECK_MIN = 2048
+
+
+def service_fails(decoded_prefix):
+    plain = unscramble(decoded_prefix[:16])
+    return plain is None or bool(plain[:16].any())
+
+
+@lru_cache(maxsize=None)
 def constellation(bpsc):
     """Standard Gray-labelled normalized BPSK/QPSK/16-QAM/64-QAM."""
     labels = ((np.arange(2 ** bpsc)[:, None] >> np.arange(bpsc)) & 1)
@@ -181,22 +250,32 @@ def demap(z, bpsc, reliability):
     return (soft * reliability[:, None]).ravel()
 
 
+def _scrambler_table():
+    """Each nonzero seed's 127-bit scrambler period, and seeds by first 7 bits."""
+    periods, by_prefix = np.zeros((128, 127), dtype=np.uint8), {}
+    for seed in range(1, 128):
+        state = seed
+        for i in range(127):
+            f = ((state >> 6) ^ (state >> 3)) & 1
+            periods[seed, i] = f
+            state = ((state << 1) | f) & 127
+        by_prefix.setdefault(tuple(periods[seed, :7]), seed)
+    return periods, by_prefix
+
+
+_SCRAMBLER, _SEED_BY_PREFIX = _scrambler_table()
+
+
 def unscramble(bits):
     """Recover the nonzero seed from the seven known-zero SERVICE bits."""
-    for seed in range(1, 128):
-        state, prefix = seed, []
-        for _ in range(7):
-            f = ((state >> 6) ^ (state >> 3)) & 1
-            prefix.append(f)
-            state = ((state << 1) | f) & 127
-        if np.array_equal(prefix, bits[:7]):
-            state, plain = seed, np.empty(len(bits), dtype=np.uint8)
-            for i, bit in enumerate(bits):
-                f = ((state >> 6) ^ (state >> 3)) & 1
-                plain[i] = int(bit) ^ f
-                state = ((state << 1) | f) & 127
-            return plain
-    return None
+    bits = np.asarray(bits)
+    if len(bits) < 7:
+        return None
+    seed = _SEED_BY_PREFIX.get(tuple(int(b) for b in bits[:7]))
+    if seed is None:
+        return None
+    sequence = np.resize(_SCRAMBLER[seed], len(bits))
+    return (bits.astype(np.uint8) ^ sequence).astype(np.uint8)
 
 
 def pilot_phase(raw, expected, trend):
@@ -549,7 +628,12 @@ def decode_candidate(x, candidate, coarse):
     def payload(symbols):
         soft = np.concatenate([deinterleave(demap(symbol, bpsc, reliability), bpsc, columns, carriers)
                                for symbol in symbols])
-        decoded = viterbi(depuncture(soft, nsym * dbps, dbps, pattern)[:16 + 8 * length + 6])
+        coded = depuncture(soft, nsym * dbps, dbps, pattern)[:16 + 8 * length + 6]
+        if ('ofdm_format' in result and len(coded) > SERVICE_CHECK_MIN and
+                service_fails(viterbi(coded[:SERVICE_CHECK_STEPS], terminated=False))):
+            # HT only: the legacy second pass re-estimates from last['decoded'].
+            return dict(result, status='bad_service')
+        decoded = viterbi(coded)
         last['decoded'] = decoded
         plain = unscramble(decoded)
         if plain is None or plain[:16].any():

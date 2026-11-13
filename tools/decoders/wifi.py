@@ -160,9 +160,31 @@ def merge_branches(packets):
     return out
 
 
+_WINDOW = None
+
+
+def _window_worker(core):
+    return _WINDOW(core)
+
+
+def _map_windows(window, cores, jobs):
+    """Yield window(core) for each core in order, in up to `jobs` forked processes."""
+    global _WINDOW
+    if jobs <= 1 or len(cores) <= 1:
+        yield from map(window, cores)
+        return
+    import multiprocessing
+    _WINDOW = window      # inherited by the forked workers; closures need not pickle
+    try:
+        with multiprocessing.get_context('fork').Pool(min(jobs, len(cores)), maxtasksperchild=8) as pool:
+            yield from pool.imap(_window_worker, cores)
+    finally:
+        _WINDOW = None
+
+
 def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_threshold=.5,
             dsss_sync_search=True, window_samples=20_000_000, cck=False, recover=False, dc_block=0,
-            combine=False, slot=0, of=1):
+            combine=False, slot=0, of=1, jobs=1):
     """Decode bounded windows with ownership by preamble time, retaining boundaries.
 
     Seventy milliseconds covers even the maximum 16-bit DSSS duration field.
@@ -183,6 +205,10 @@ def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_t
     interleave `of` streams, without a split copy: birria_rx --chain both is
     of=2 (slot 0 = chain 0, slot 1 = chain 1). Times count that slot's samples.
     combine implies of=2 and decodes both slots.
+
+    jobs > 1 decodes that many windows at once in forked worker processes;
+    windows are independent, so the result is identical to jobs=1. Each
+    worker holds one window (about 1.5 GB peak for a busy 2.4 GHz channel).
     """
     size = Path(path).stat().st_size
     if size % 4 or not size:
@@ -204,8 +230,8 @@ def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_t
     if combine:
         combiners = {ch: combine_mod.Combiner(path, (wifi_b.channel_mhz(ch) - center) * 1e6, dc_block)
                      for ch in channels}
-    packets, diagnostics = [], []
-    for core in range(0, total, window_samples):
+    def window(core):
+        """Decode one window's branches; returns (branch, start, core_end, found, details) per branch."""
         core_end = min(total, core + window_samples)
         start, end = max(0, core - overlap), min(total, core_end + overlap)
         if combine:
@@ -220,6 +246,7 @@ def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_t
         else:
             branches = [(None, channels, lambda: load(path, start=start, count=end - start, dc_block=dc_block,
                                                        slot=slot, of=of))]
+        results = []
         for branch, decoded, read in branches:
             x = read()
             if branch == 'fd':
@@ -227,6 +254,14 @@ def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_t
             else:
                 found, details = decode_window(x, center, decoded, phy, threshold_db, min_us,
                                                stf_threshold, dsss_sync_search, cck, recover)
+            del x
+            results.append((branch, start, core_end, found, details))
+        return results
+
+    packets, diagnostics = [], []
+    cores = range(0, total, window_samples)
+    for core, results in zip(cores, _map_windows(window, cores, jobs)):
+        for branch, start, core_end, found, details in results:
             for p in found:
                 anchor = p.get('sync_time_ms', p['time_ms']) * 40000 + start
                 if not core <= anchor < core_end:
@@ -246,7 +281,6 @@ def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_t
                 if branch:
                     detail['branch'] = branch
             diagnostics.extend(details)
-            del x
     branch_valid = {}
     if combine:
         ran = {p['branch'] for p in packets} | {d['branch'] for d in diagnostics if 'branch' in d}
@@ -343,12 +377,16 @@ def main():
                          'each FCS-valid frame once (implies --dc-block 65536 unless given)')
     ap.add_argument('--no-edge-repair', action='store_true',
                     help='Keep the DC transient after blanking runs in single-chain captures, for comparisons')
+    ap.add_argument('--jobs', type=int, default=1, metavar='N',
+                    help='Decode N windows in parallel worker processes (same output; about 1.5 GB each)')
     ap.add_argument('--json', type=Path)
     ap.add_argument('--pcap', type=Path, help='Valid frames for Wireshark; relative timestamps, FCS retained')
     ap.add_argument('--packets', action='store_true', help='Also print each verified frame')
     args = ap.parse_args()
     if args.no_edge_repair:
         cs16.REPAIR_EDGES = False
+    if args.jobs < 1:
+        ap.error('--jobs must be at least 1')
     if not 0 < args.stf_threshold < 1 or args.min_us <= 0:
         ap.error('Require 0 < --stf-threshold < 1 and --min-us > 0')
     if args.capture.stat().st_size % 4:
@@ -362,7 +400,7 @@ def main():
         result, packets = analyze(args.capture, args.center, channels, args.phy,
                                   args.threshold_db, args.min_us, args.stf_threshold, not args.no_dsss_sync_search,
                                   cck=args.cck, recover=args.recover, dc_block=args.dc_block, combine=args.combine,
-                                  slot=args.slot, of=args.of)
+                                  slot=args.slot, of=args.of, jobs=args.jobs)
     except ValueError as exc:
         ap.error(str(exc))
     print(f"{result['duration_seconds']:g} seconds; {result['valid_frames']} valid frames; "

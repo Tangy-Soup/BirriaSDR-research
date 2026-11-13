@@ -25,6 +25,29 @@ Offline decoders for `.cs16` files recorded by `birria_rx` (40 MSps, interleaved
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
+numba compiles the Viterbi decoder (about 0.08 µs per trellis step, against
+about 6 µs for the pure-Python version it replaces). The output is bit-identical. The first run
+caches the compiled code in `__pycache__`. Without numba, `wifi_ofdm.py`
+falls back to the Python version.
+
+## Speed
+
+On a busy 2.4 GHz channel, the remaining cost is the front end: the
+`resample_poly` 2:1 and 11:10 resamplers and the DSSS `fftconvolve` filters
+take roughly 15 CPU-seconds per second of 40 MSps signal, even on a quiet channel.
+`--jobs N` decodes N half-second windows in parallel forked processes. Windows are
+independent, so the output is identical to `--jobs 1`. Each worker holds one window,
+about 1.5 GB at peak on a busy channel. With 7 GB of RAM, use 2–3.
+
+HT payloads longer than 2048 trellis steps are first checked from a truncated
+decode of their first 208 steps (`SERVICE_CHECK_STEPS`). If the SERVICE field
+fails there, the frame is reported `bad_service` without decoding the rest.
+Long failing A-MPDUs used to take most of the decode time on busy channels. On the 2026-11-12
+regression set, 60 early rejections included none that a full decode would have
+passed (each was checked against a full decode).
+Legacy frames always get the full decode, because the 6 Mbps second pass re-estimates
+from it.
+
 ## Usage
 
 Always pass the centre frequency used for the capture, in MHz.
@@ -359,6 +382,8 @@ Record with `manual` gain so that levels are real:
   is experimental and requires `--cck`. A VHT/HE transmission can have a valid
   legacy SIGNAL field but still fail legacy payload decoding. Such failures
   remain unverified.
+- Decoding runs well below real time: a busy channel still takes about 20 single-core seconds per
+  second of signal (see Speed).
 - Captures are short observations; weak APs, collisions, fading, receiver blanking and interference can still prevent discovery. This is not a calibrated spectrum analyzer or a complete replacement for a normal Wi-Fi scan.
 
 ## Validation
