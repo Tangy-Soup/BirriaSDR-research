@@ -976,6 +976,72 @@ class FdCombineTests(unittest.TestCase):
         self.assertEqual(p['sample'], rx.decode_candidate(chains[0], at, cfo)['sample'])
 
 
+def two_chain_ht(mcs, short_gi, snr_db, seed, taps=((1, .5j, -.3, .2), (.4, -.7, .3j, .5))):
+    """One HT A-MPDU (one valid MPDU) through a different 4-tap channel per chain, a
+    20 kHz CFO and white noise at snr_db per chain (20 MSps). Returns chains, MPDU."""
+    body = beacon() + bytes(300)
+    mpdu = body + zlib.crc32(body).to_bytes(4, 'little')
+    wave, _ = ht_wave(mcs, short_gi=short_gi, mpdus=[mpdu])
+    sigma = np.sqrt(np.mean(np.abs(wave) ** 2) / 10 ** (snr_db / 10) / 2)
+    rng = np.random.default_rng(seed)
+    chains = []
+    for h in taps:
+        h = np.array(h) / np.sqrt(np.sum(np.abs(h) ** 2))
+        y = np.r_[np.zeros(400), np.convolve(wave, h), np.zeros(400)]
+        y = y * np.exp(2j * np.pi * 20e3 * np.arange(len(y)) / rx.FS)
+        chains.append((y + sigma * (rng.normal(size=len(y)) + 1j * rng.normal(size=len(y)))).astype(np.complex64))
+    return chains, mpdu, (2 * sigma ** 2, 2 * sigma ** 2, 0j)
+
+
+class FdHtTests(unittest.TestCase):
+    """The fd branch's HT rebuild: both chains cut on the HT-SIG's own symbol timing."""
+
+    def test_short_gi_ht_decodes_only_on_its_own_timing(self):
+        (c0, c1), mpdu, noise = two_chain_ht(7, True, 30, 1)
+        mrc = (c0 + c1) / np.sqrt(2)
+        at, cfo = next(iter(rx.detect_stf(mrc)))
+        ltf, omega = combine_fd.sync(mrc, at, cfo)
+        first = combine_fd._decode_legacy_timed(c0, c1, ltf, omega, noise)
+        # 80-sample cuts of 72-sample symbols: the legacy-timed stream cannot decode it.
+        self.assertEqual(first['ofdm_format'], 'ht')
+        self.assertFalse(first['fcs_ok'])
+        p = combine_fd.decode_candidate(c0, c1, mrc, at, cfo, noise)
+        self.assertTrue(p['fd_ht'])
+        self.assertEqual((p['ampdu_subframes'], p['ampdu_valid']), (1, 1))
+        self.assertEqual(p['frame'], mpdu)
+        self.assertEqual((p['sample'], p['cfo_hz']), (first['sample'], first['cfo_hz']))
+
+    def test_rebuild_tolerates_a_sync_two_samples_off(self):
+        (c0, c1), mpdu, noise = two_chain_ht(7, True, 30, 2)
+        mrc = (c0 + c1) / np.sqrt(2)
+        at, cfo = next(iter(rx.detect_stf(mrc)))
+        ltf, omega = combine_fd.sync(mrc, at, cfo)
+        first = combine_fd._decode_legacy_timed(c0, c1, ltf, omega, noise)
+        for offset in (-2, 2):
+            p = combine_fd.ht_rebuild(c0, c1, ltf + offset, omega, first, noise)
+            self.assertEqual(p['frame'], mpdu, offset)
+
+    def test_weak_frame_neither_chain_decodes(self):
+        (c0, c1), mpdu, noise = two_chain_ht(4, True, 11, 3)
+        mrc = (c0 + c1) / np.sqrt(2)
+        at, cfo = next(iter(rx.detect_stf(mrc)))
+        for c in (c0, c1):
+            self.assertFalse(rx.decode_candidate(c, at, cfo)['fcs_ok'])
+        p = combine_fd.decode_candidate(c0, c1, mrc, at, cfo, noise)
+        self.assertTrue(p['fd_ht'])
+        self.assertEqual(p['frame'], mpdu)
+
+    def test_rebuild_keeps_the_first_result_unless_it_has_more_valid_mpdus(self):
+        (c0, c1), mpdu, noise = two_chain_ht(7, False, 40, 4)
+        mrc = (c0 + c1) / np.sqrt(2)
+        at, cfo = next(iter(rx.detect_stf(mrc)))
+        ltf, omega = combine_fd.sync(mrc, at, cfo)
+        first = combine_fd._decode_legacy_timed(c0, c1, ltf, omega, noise)
+        self.assertEqual(first['ampdu_valid'], 1)  # long GI: the legacy-timed stream decodes it
+        self.assertIs(combine_fd.ht_rebuild(c0, c1, ltf, omega, first, noise), first)
+        self.assertNotIn('fd_ht', combine_fd.decode_candidate(c0, c1, mrc, at, cfo, noise))
+
+
 class SlotTests(unittest.TestCase):
     """--slot K --of N decodes one stream of an interleaved recording without a split copy."""
 

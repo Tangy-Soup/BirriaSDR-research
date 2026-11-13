@@ -25,8 +25,24 @@ chains combined per subcarrier:
      2, smoothed). New weights, decode again, at most DD_ROUNDS times; a
      pass counts only if its FCS passes.
 
-HT frames go through the same virtual stream, which keeps legacy symbol
-timing and the 52 legacy carriers only, so they gain little here.
+HT frames go through the same virtual stream first. It keeps legacy symbol
+timing and the 52 legacy carriers, which cuts an HT payload wrongly (56
+carriers; 72-sample symbols with short GI). So when that decode is a
+non-STBC HT PPDU without every MPDU valid, both chains are cut again with
+the timing its HT-SIG gives (ht_rebuild):
+  6. L-LTF, L-SIG, HT-SIG1/2, HT-STF, HT-LTF at 80 samples, then the data
+     symbols at 64 + GI, every FFT window BACKOFF samples early (inside the
+     guard interval, so a late sync on the combined stream pulls in no
+     inter-symbol interference).
+  7. Each chain's channel from wifi_ofdm.ht_channel (HT-LTF, L-LTF averaged
+     in when it matches, smoothed), whitened MRC weights on all 56 carriers,
+     and the same weights for every symbol, so the virtual stream shows one
+     channel from the L-LTF to the last data symbol.
+  8. Each rebuilt symbol is advanced cyclically by ADVANCE samples: a
+     virtual symbol that came out delayed would make the decoder's own LTF
+     search land late and read the next rebuilt prefix; an advance within
+     the guard interval is harmless in a perfectly cyclic stream.
+  9. The rebuild replaces the first result only when it has more valid MPDUs.
 """
 import numpy as np
 from scipy import signal
@@ -125,12 +141,78 @@ def common_phase(Z, X, h):
     return np.exp(-1j * (phi[:, None] + beta[:, None] * W.ACTIVE))
 
 
+HK = W.HT_ACTIVE % 64
+BACKOFF, ADVANCE = 3, 5  # HT rebuild: FFT windows early, then rebuilt symbols advanced (samples)
+_ADVANCE = np.exp(2j * np.pi * np.fft.fftfreq(64) * ADVANCE)
+
+
+def valid_mpdus(p):
+    return 0 if p is None else p.get('ampdu_valid', int(bool(p['fcs_ok'])))
+
+
+def ht_cut(y, ltf, omega, nsym, gi):
+    """CFO-corrected samples from L-LTF start - BACKOFF, and the FFT starts of
+    L-SIG, HT-SIG1/2, HT-STF, HT-LTF and nsym data symbols of 64 + gi samples."""
+    ltf = max(0, ltf - BACKOFF)
+    first = 128 + 80 * 5
+    end = ltf + first + (64 + gi) * nsym
+    if end > len(y):
+        return None, None
+    c = y[ltf:end] * np.exp(-1j * omega * np.arange(end - ltf))
+    return c, [128 + 80 * i + 16 for i in range(5)] + [first + (64 + gi) * n + gi for n in range(nsym)]
+
+
+def ht_virtual(c0, c1, starts, w0, w1, gi):
+    """The HT-timed virtual stream: both chains' bins combined on HT_ACTIVE,
+    advanced by ADVANCE, prefixes copied from each symbol's tail."""
+    def comb(a, b):
+        z = np.zeros(64, complex)
+        z[HK] = np.conj(w0) * np.fft.fft(a)[HK] + np.conj(w1) * np.fft.fft(b)[HK]
+        return np.fft.ifft(z * _ADVANCE)
+    t = [comb(c0[a:a + 64], c1[a:a + 64]) for a in (0, 64)]
+    parts = [np.zeros(LEAD), t[0][-32:], t[0], t[1]]
+    for i, a in enumerate(starts):
+        s = comb(c0[a:a + 64], c1[a:a + 64])
+        g = 16 if i < 5 else gi
+        parts += [s[-g:], s]
+    parts.append(np.zeros(160))
+    return np.concatenate(parts).astype(np.complex64)
+
+
+def ht_rebuild(y0, y1, ltf, omega, packet, noise):
+    """Decode a non-STBC HT PPDU again from both chains cut on its HT timing
+    (module docstring, steps 6-9). Returns the better of packet and the rebuild."""
+    _, _, _, dbps = W.HT_MCS[packet['mcs']]
+    nsym, gi = -(-(16 + 8 * packet['length'] + 6) // dbps), (8 if packet['short_gi'] else 16)
+    c0, starts = ht_cut(y0, ltf, omega, nsym, gi)
+    c1, _ = ht_cut(y1, ltf, omega, nsym, gi)
+    if c0 is None or c1 is None:
+        return packet
+    w = weights(W.ht_channel(c0, 1)[0][HK], W.ht_channel(c1, 1)[0][HK], noise)
+    p = W.decode_candidate(ht_virtual(c0, c1, starts, *w, gi), 0, 0.0)
+    if p is None or p.get('ofdm_format') != 'ht' or valid_mpdus(p) <= valid_mpdus(packet):
+        return packet
+    p.update(sample=packet['sample'], time_ms=packet['time_ms'], cfo_hz=packet['cfo_hz'],
+             fd_rounds=packet['fd_rounds'], fd_ht=True)
+    return p
+
+
 def decode_candidate(y0, y1, yb, candidate, coarse, noise):
     """Decode one STF candidate of combined stream yb from chains y0, y1 (20 MSps channel grid)."""
     found = sync(yb, candidate, coarse)
     if found is None:
         return None
     ltf, omega = found
+    p = _decode_legacy_timed(y0, y1, ltf, omega, noise)
+    if (p is not None and p.get('ofdm_format') == 'ht' and p['status'] != 'ht_unsupported'
+            and not p['stbc']
+            and not (p['fcs_ok'] and p.get('ampdu_valid') == p.get('ampdu_subframes'))):
+        p = ht_rebuild(y0, y1, ltf, omega, p, noise)
+    return p
+
+
+def _decode_legacy_timed(y0, y1, ltf, omega, noise):
+    """Steps 2-5: the legacy-timed virtual stream and the 6 Mbps re-estimation rounds."""
     b0, s0 = chain_bins(y0, ltf, omega)
     b1, s1 = chain_bins(y1, ltf, omega)
     if b0 is None or b1 is None:

@@ -323,8 +323,7 @@ channel, the estimated slot-1 delay and noise correlation. It implies
   into a CFO-free stream that `wifi_ofdm.decode_candidate` decodes unchanged.
   A 6 Mbps legacy frame that fails its FCS gets up to two more rounds with
   each chain's channel re-estimated from its own decode, and a round counts
-  only if its FCS passes. The virtual stream keeps legacy symbol timing and
-  carriers, so HT frames gain little.
+  only if its FCS passes.
   - **Paired noise injection** (25 strong 5 GHz frames, 2,025 trials):
     `fd` SNR₅₀ 0.98 dB against `mrc`'s 1.79 (−0.81 dB [−1.14, −0.51]). The
     union improves by 0.88 dB [0.67, 1.14].
@@ -342,6 +341,18 @@ channel, the estimated slot-1 delay and noise correlation. It implies
     and HT traffic), `fd` alone decoded 223 frames to `mrc`'s 351. It added
     4 to the union's 360 (lost none) for 61% more decode time (282 → 454 s),
     so `--combine` runs it only on channels above 14.
+- **`fd` for HT** (2026-11-12). The first virtual stream keeps legacy symbol
+  timing and the 52 legacy carriers, so it cuts a short-GI HT payload
+  (72-sample symbols) wrongly and drops carriers ±27/28. When that decode is
+  a non-STBC HT PPDU without every MPDU valid, both chains are cut again on
+  the timing its HT-SIG gives. Each chain's channel comes from `ht_channel`
+  (HT-LTF, smoothed, L-LTF averaged in when it matches), with whitened MRC
+  weights on all 56 carriers.
+  - Every FFT window starts 3 samples early, inside the guard interval, so a
+    late sync on the combined stream pulls in no inter-symbol interference.
+    Each rebuilt symbol is then advanced 5 samples, so the decoder's own LTF
+    search in the virtual stream never lands late.
+  - The rebuild replaces the first decode only when it has more valid MPDUs.
 
 Wi-Fi scans now select the nominal **20 MHz analog/digital filter profile** by
 default; `--bandwidth 40000000` restores the wider profile. Both retain 40 MSps
@@ -442,7 +453,10 @@ beacon only `fd` decodes (its transmitter's echoes and one-sample chain lag
 differ from the strong frames' that set the combiner's delay). They check
 the per-subcarrier weights' unit noise and MRC optimum, and decode a clean
 frame through the virtual stream with independent per-chain channels, a
-chain-1 lag and a CFO.
+chain-1 lag and a CFO. The HT rebuild tests decode a short-GI MCS 7 A-MPDU
+that the legacy-timed stream cannot, and a weak MCS 4 one neither chain
+decodes. They also decode with the sync two samples early or late, and keep
+the first result when the rebuild adds nothing.
 Real capture results are saved alongside their input recordings.
 
 On the existing one-second channel 1 recording, the original decoder found 27
