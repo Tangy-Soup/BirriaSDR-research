@@ -39,8 +39,8 @@ BirriaSDR ships as `libbirriasdr`, a C11 library with an API modeled on
 librtlsdr, together with a command-line recorder. It talks to the device from
 userspace through libusb and includes the source of its own small device
 program. Start with [Build and try](#build-and-try), or jump to the [API](#api)
-to add the receiver to an application. To see it working without building
-anything, try the rough [proof of concept](#proof-of-concept).
+to add the receiver to an application. To watch a live spectrum in SDR++, gqrx
+or GNU Radio, build the [SoapySDR module](#soapysdr-module).
 
 > [!IMPORTANT]
 >
@@ -48,8 +48,6 @@ anything, try the rough [proof of concept](#proof-of-concept).
 > initialization profile, and the library tunes 2156 to 2610 MHz and 4500 to
 > 6615 MHz. Sensitivity across those ranges, frequency accuracy and gain are not
 > calibrated. Use at your own risk.
-
-https://github.com/user-attachments/assets/64e9fbbd-1f16-4c7b-905c-5624b9c574b7
 
 ## Background
 
@@ -189,24 +187,6 @@ spur rose more than 3 dB over the median bin on any channel. Decoded frame
 counts at 2.4 GHz follow traffic that changes from minute to minute, so they
 don't measure the shield; the floors do. These numbers come from one run, on
 one adapter, in one room.
-
-## Proof of concept
-
-**The [CyberEther](https://cyberether.org/) flowgraph in
-[`cyberether/birriasdr.yml`](cyberether/birriasdr.yml) is a very rough proof of
-concept.** It exists so people can quickly test the dongle and watch a live
-spectrum without building anything. It runs its own Python receiver, separate
-from the C library, with a fixed channel 6 profile, an older 20 MHz analog
-filter and no automatic recovery. Expect rough edges and runs that stop on an
-overrun. For anything beyond a quick test, use the C library.
-
-To try it, install the CyberEther desktop app with a Python 3.11 or newer
-runtime and select that interpreter under **Settings → Runtime → Python
-Runtime**. Connect the dongle to a USB 3.0 port, open the flowgraph and let it
-install its Python dependencies. The note inside the flowgraph explains the USB
-setup for each platform and the gain settings. On a Raspberry Pi 5, the
-flowgraph power-cycles the USB ports by default, which needs root and only works
-when the dongle is the only USB device connected.
 
 ## Build and try
 
