@@ -42,6 +42,9 @@ program. Start with [Build and try](#build-and-try), or jump to the [API](#api)
 to add the receiver to an application. To watch a live spectrum in SDR++, gqrx
 or GNU Radio, build the [SoapySDR module](#soapysdr-module).
 
+To set up a new computer in one go (Windows with WSL2, or native Linux), use
+the scripts and guide in [setup/](setup/README.md).
+
 > [!IMPORTANT]
 >
 > This is experimental software. The tested board starts from a channel 6
