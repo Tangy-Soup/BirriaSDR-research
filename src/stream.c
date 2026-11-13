@@ -187,17 +187,34 @@ static int prepare_capture(birriasdr_dev_t *dev, struct bs_reader *reader, uint3
     return result;
 }
 
+/* The bytes of a completion that belong to events. An aggregate whose length is
+ * a whole number of 1,024-byte SuperSpeed packets gains four zero bytes, so the
+ * transfer still ends with a short packet. Events are 40, 128 or 8,320 bytes, so
+ * no completion of events alone is four bytes past such a multiple.
+ * (From flipperdevices/BirriaSDR 5e69edf.)
+ */
+static int event_bytes(const uint8_t *bytes, size_t *length)
+{
+    if (*length % 1024 != 4)
+        return 0;
+    if (bs_get_le32(bytes + *length - 4))
+        return BIRRIASDR_ERROR_PROTOCOL;
+    *length -= 4;
+    return 0;
+}
+
 /* Consume independently of the USB event pump. EP0 status reads are deferred
  * until a finite run finishes, cancellation is requested, or progress pauses;
  * hammering EP0 during capture would itself compete with the data endpoint.
  */
 static int receive_loop(birriasdr_dev_t *dev, struct bs_reader *reader,
-                        struct bs_framer *framer, uint32_t limit, uint8_t *bytes)
+                        struct bs_framer *framer, uint32_t limit)
 {
     uint64_t last_progress = bs_now_ns(), next_poll = 0, expected_packets = 0;
     uint32_t words[16] = {0};
     bool stop_sent = false, terminal = false;
     for (;;) {
+        const uint8_t *bytes;
         size_t length;
         uint64_t now;
         int result;
@@ -206,10 +223,11 @@ static int receive_loop(birriasdr_dev_t *dev, struct bs_reader *reader,
             BS_TRY(stop_capture(dev));
             stop_sent = true;
         }
-        result = bs_reader_take(reader, bytes, &length, 20);
+        result = bs_reader_take(reader, &bytes, &length, 20);
         if (result != BIRRIASDR_ERROR_TIMEOUT) {
             BS_TRY(result);
             dev->stats.usb_bytes += length;
+            BS_TRY(event_bytes(bytes, &length));
             BS_TRY(bs_framer_feed(framer, bytes, length));
             dev->stats.packets = framer->packets;
             if (length)
@@ -235,11 +253,12 @@ static int receive_loop(birriasdr_dev_t *dev, struct bs_reader *reader,
         if (terminal && framer->packets >= expected_packets) {
             /* Drain already queued/trailing events: duplicates must fail too. */
             do {
-                result = bs_reader_take(reader, bytes, &length, 20);
+                result = bs_reader_take(reader, &bytes, &length, 20);
                 if (result == BIRRIASDR_ERROR_TIMEOUT)
                     break;
                 BS_TRY(result);
                 dev->stats.usb_bytes += length;
+                BS_TRY(event_bytes(bytes, &length));
                 BS_TRY(bs_framer_feed(framer, bytes, length));
             } while (length);
             dev->stats.packets = framer->packets;
@@ -277,7 +296,7 @@ static bool clean_overrun(const birriasdr_dev_t *dev, int error)
  * never mask device removal or framing corruption. The outer loop decides
  * whether to report a discontinuity and try the committed settings again.
  */
-static int capture_once(struct delivery *delivery, uint8_t *bytes, uint32_t depth,
+static int capture_once(struct delivery *delivery, uint32_t depth,
                         uint32_t packets, bool *can_retry)
 {
     birriasdr_dev_t *dev = delivery->dev;
@@ -313,7 +332,7 @@ static int capture_once(struct delivery *delivery, uint8_t *bytes, uint32_t dept
     framer.gap = delivery->holdback ? receive_gap : NULL;
     framer.context = delivery;
     dev->stats.stage = BIRRIASDR_STAGE_STREAM;
-    result = receive_loop(dev, reader, &framer, packets, bytes);
+    result = receive_loop(dev, reader, &framer, packets);
     dev->stats.packets = framer.packets;
     pthread_mutex_lock(&dev->control_mutex);
     dev->control_ready = false;
@@ -397,7 +416,6 @@ int bs_stream(birriasdr_dev_t *dev, birriasdr_read_async_cb_t callback,
 {
     struct delivery delivery = {0};
     uint64_t total_packets = 0, total_bytes = 0;
-    uint8_t *bytes;
     uint32_t faults = 0;
     unsigned idle = BS_IDLE;
     int result = BIRRIASDR_ERROR_NO_MEMORY;
@@ -423,16 +441,15 @@ int bs_stream(birriasdr_dev_t *dev, birriasdr_read_async_cb_t callback,
     delivery = (struct delivery){.dev = dev, .callback = callback, .context = context,
                                 .capacity = buffer_samples};
     delivery.iq = calloc((size_t)buffer_samples * 2, sizeof(*delivery.iq));
-    bytes = malloc(BS_USB_BYTES);
     if (dev->decimation > 1) {
         delivery.halfband = malloc(sizeof(*delivery.halfband));
         delivery.packet = malloc(sizeof(*delivery.packet) * 2 * BS_PACKET_SAMPLES);
     }
-    if (delivery.iq && bytes &&
+    if (delivery.iq &&
         (dev->decimation <= 1 || (delivery.halfband && delivery.packet))) {
         for (;;) {
             bool can_retry;
-            result = capture_once(&delivery, bytes, depth, packets, &can_retry);
+            result = capture_once(&delivery, depth, packets, &can_retry);
             total_packets += dev->stats.packets;
             total_bytes += dev->stats.usb_bytes;
             bool overflow = clean_overrun(dev, result);
@@ -455,7 +472,6 @@ int bs_stream(birriasdr_dev_t *dev, birriasdr_read_async_cb_t callback,
     dev->stats.samples = delivery.delivered;
     dev->stats.packets = total_packets;
     dev->stats.usb_bytes = total_bytes;
-    free(bytes);
     free(delivery.iq);
     free(delivery.halfband);
     free(delivery.packet);

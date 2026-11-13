@@ -3,14 +3,52 @@
  */
 #include "usb_stream.h"
 #include <errno.h>
+#include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+/* Completions queued before the consumer is woken. Each wakeup costs about as
+ * much as parsing a completion, and four are under 7 ms of samples at 10 MSps;
+ * a shorter run is taken when the consumer's wait times out. (From
+ * flipperdevices/BirriaSDR 189e93f.)
+ */
+#define BS_WAKE_COUNT 4u
+
+/* The completion queue holds at most 32 MiB. */
+#define BS_QUEUE_SLOTS ((32u << 20) / BS_USB_BYTES)
+
+/* Linux charges each queued transfer's buffer, plus under 1 KiB of bookkeeping,
+ * against usbfs_memory_mb, and a submit past it fails. 0 means no limit.
+ * (From flipperdevices/BirriaSDR 34b6ed3.)
+ */
+unsigned bs_usb_depth_limit(unsigned memory_mb)
+{
+    if (!memory_mb)
+        return UINT_MAX;
+    return (unsigned)(((uint64_t)memory_mb << 20) / (BS_USB_BYTES + 1024u));
+}
+
+/* The kernel's usbfs limit in MiB, 0 when there is none or it cannot be read. */
+unsigned bs_usbfs_memory_mb(void)
+{
+    unsigned mb = 0;
+#ifdef __linux__
+    FILE *file = fopen("/sys/module/usbcore/parameters/usbfs_memory_mb", "r");
+    if (file) {
+        if (fscanf(file, "%u", &mb) != 1)
+            mb = 0;
+        fclose(file);
+    }
+#endif
+    return mb;
+}
+
 struct transfer_slot {
     struct bs_reader *reader;
     struct libusb_transfer *transfer;
-    bool pending;
+    bool pending, dev_mem;
     struct transfer_slot *next;
 };
 
@@ -19,7 +57,7 @@ struct bs_reader {
     pthread_mutex_t mutex;
     pthread_cond_t ready;
     pthread_t thread;
-    bool started, stopping, backpressure;
+    bool started, stopping, backpressure, lent;
     int error;
     unsigned depth, inflight, capacity, head, tail, count;
     struct transfer_slot *slots;
@@ -113,7 +151,7 @@ static void LIBUSB_CALL receive_transfer(struct libusb_transfer *transfer)
     pthread_mutex_lock(&reader->mutex);
     slot->pending = false;
     --reader->inflight;
-    bool held = false;
+    bool held = false, wake = true;
     if (!reader->stopping && !reader->error) {
         if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
             reader->error = transfer->status == LIBUSB_TRANSFER_NO_DEVICE ?
@@ -136,12 +174,14 @@ static void LIBUSB_CALL receive_transfer(struct libusb_transfer *transfer)
                 }
             } else {
                 queue_transfer(reader, transfer);
+                wake = reader->count >= BS_WAKE_COUNT;
             }
         }
         if (!reader->error && !held)
             submit_slot(slot);
     }
-    pthread_cond_broadcast(&reader->ready);
+    if (wake || reader->error)
+        pthread_cond_broadcast(&reader->ready);
     pthread_mutex_unlock(&reader->mutex);
 }
 
@@ -193,8 +233,10 @@ static void *pump_events(void *context)
     }
 }
 
-/* Allocate and touch every queue page before starting RF. A 512-slot queue is
- * 32 MiB; its bound prevents unbounded memory growth behind a slow callback.
+/* Allocate and touch every queue page before starting RF. The queue holds
+ * eight completions per transfer, at most 32 MiB; its bound prevents unbounded
+ * memory growth behind a slow callback. A depth past the usbfs limit is lowered
+ * to fit it.
  */
 int bs_reader_create(birriasdr_dev_t *dev, unsigned depth, struct bs_reader **out)
 {
@@ -203,10 +245,13 @@ int bs_reader_create(birriasdr_dev_t *dev, unsigned depth, struct bs_reader **ou
     if (!reader)
         return BIRRIASDR_ERROR_NO_MEMORY;
     reader->dev = dev;
+    const unsigned limit = bs_usb_depth_limit(bs_usbfs_memory_mb());
+    if (depth > limit)
+        depth = limit < 4 ? 4 : limit;
     reader->backpressure = dev->stream_continuous && dev->recovery_limit &&
                            dev->recovery_callback;
     reader->depth = depth;
-    reader->capacity = depth < 64 ? depth * 8 : 512;
+    reader->capacity = depth * 8 < BS_QUEUE_SLOTS ? depth * 8 : BS_QUEUE_SLOTS;
     if (pthread_mutex_init(&reader->mutex, NULL)) {
         free(reader);
         return BIRRIASDR_ERROR_IO;
@@ -229,7 +274,13 @@ int bs_reader_create(birriasdr_dev_t *dev, unsigned depth, struct bs_reader **ou
         slot->transfer = libusb_alloc_transfer(0);
         if (!slot->transfer)
             goto allocation_failed;
-        buffer = malloc(BS_USB_BYTES);
+        /* Memory usbfs maps for DMA spares the kernel a bounce buffer and a copy
+         * per transfer. The heap serves where it is unavailable. (From
+         * flipperdevices/BirriaSDR 2ec8116.) */
+        buffer = dev->handle ? libusb_dev_mem_alloc(dev->handle, BS_USB_BYTES) : NULL;
+        slot->dev_mem = buffer != NULL;
+        if (!buffer)
+            buffer = malloc(BS_USB_BYTES);
         if (!buffer)
             goto allocation_failed;
         memset(buffer, 0, BS_USB_BYTES);
@@ -268,11 +319,13 @@ int bs_reader_start(struct bs_reader *reader)
     return result < 0 ? submit_error(result) : 0;
 }
 
-/* Copy one completed transfer while holding the queue lock. The consumer gets
- * independent storage so USB callbacks can immediately reuse their queue slots.
+/* Lend the oldest completed transfer in place. Its queue slot stays occupied,
+ * so USB callbacks cannot overwrite it, until the next take or destroy.
  * CLOCK_REALTIME matches POSIX's default condition clock, including on macOS.
+ * (From flipperdevices/BirriaSDR 1f54521.)
  */
-int bs_reader_take(struct bs_reader *reader, uint8_t *data, size_t *length, unsigned timeout_ms)
+int bs_reader_take(struct bs_reader *reader, const uint8_t **data, size_t *length,
+                   unsigned timeout_ms)
 {
     struct timespec deadline;
     int result = 0;
@@ -280,12 +333,20 @@ int bs_reader_take(struct bs_reader *reader, uint8_t *data, size_t *length, unsi
     deadline.tv_nsec += (long)timeout_ms * 1000000;
     deadline.tv_sec += deadline.tv_nsec / 1000000000;
     deadline.tv_nsec %= 1000000000;
+    *data = NULL;
     *length = 0;
     pthread_mutex_lock(&reader->mutex);
+    if (reader->lent) {
+        reader->lent = false;
+        reader->head = (reader->head + 1) % reader->capacity;
+        --reader->count;
+        resume_transfers(reader);
+    }
     while (!reader->count && !reader->error) {
         int wait = pthread_cond_timedwait(&reader->ready, &reader->mutex, &deadline);
         if (wait == ETIMEDOUT) {
-            result = BIRRIASDR_ERROR_TIMEOUT;
+            if (!reader->count)
+                result = BIRRIASDR_ERROR_TIMEOUT;
             break;
         }
         if (wait) {
@@ -296,11 +357,9 @@ int bs_reader_take(struct bs_reader *reader, uint8_t *data, size_t *length, unsi
     if (reader->error)
         result = reader->error;
     if (!result && reader->count) {
+        *data = reader->queue + (size_t)reader->head * BS_USB_BYTES;
         *length = reader->lengths[reader->head];
-        memcpy(data, reader->queue + (size_t)reader->head * BS_USB_BYTES, *length);
-        reader->head = (reader->head + 1) % reader->capacity;
-        --reader->count;
-        resume_transfers(reader);
+        reader->lent = true;
     }
     pthread_mutex_unlock(&reader->mutex);
     return result;
@@ -331,7 +390,10 @@ void bs_reader_destroy(struct bs_reader *reader)
         for (unsigned i = 0; i < reader->depth; ++i) {
             struct libusb_transfer *transfer = reader->slots[i].transfer;
             if (transfer) {
-                free(transfer->buffer);
+                if (reader->slots[i].dev_mem)
+                    libusb_dev_mem_free(reader->dev->handle, transfer->buffer, BS_USB_BYTES);
+                else
+                    free(transfer->buffer);
                 libusb_free_transfer(transfer);
             }
         }

@@ -55,7 +55,7 @@ static int checksum_gap(void *context, uint32_t state, uint64_t packets)
  */
 static void test_framing_equivalence(void)
 {
-    enum { TOTAL = 40 + BS_FRAME_BYTES * 3 + 48 };
+    enum { TOTAL = 40 + BS_FRAME_BYTES * 3 + BS_HEADER_BYTES };
     static uint8_t stream[TOTAL];
     uint8_t *at = stream;
     bs_put_le32(at, 0x38000000u | 36);
@@ -66,7 +66,7 @@ static void test_framing_equivalence(void)
         for (unsigned i = 44; i < BS_FRAME_BYTES - 4; ++i)
             at[i] = (uint8_t)(i * (sequence + 3));
     }
-    bs_put_le32(at, 0x3800002c);
+    bs_put_le32(at, 0x38000000u | (BS_HEADER_BYTES - 4));
     bs_put_le32(at + 8, 9);
     bs_put_le32(at + 12, 1);
     bs_put_le32(at + 24, 0x38000014);
@@ -74,11 +74,11 @@ static void test_framing_equivalence(void)
     at[32] = 0xf6;
     bs_put_le32(at + 36, 2);
     bs_put_le32(at + 40, 0x12345678);
-    at += 48;
+    at += BS_HEADER_BYTES;
     make_frame(at, 2);
     /* Corruption: none, data sequence, data nonce, marker count, RXD0 of the last event. */
     const size_t flip[] = {0, 40 + 36, 40 + BS_FRAME_BYTES + 40, 40 + 2 * BS_FRAME_BYTES + 12,
-                           40 + 2 * BS_FRAME_BYTES + 48 + 3};
+                           40 + 2 * BS_FRAME_BYTES + BS_HEADER_BYTES + 3};
     for (unsigned c = 0; c < sizeof(flip) / sizeof(flip[0]); ++c) {
         uint64_t reference_sum = 0;
         struct bs_framer reference = {.nonce = 0x12345678, .payload = checksum_payload,
@@ -166,8 +166,8 @@ static int observe_gap(void *context, uint32_t state, uint64_t packets)
  */
 static void test_gap_events(void)
 {
-    uint8_t marker[48] = {0};
-    bs_put_le32(marker, 0x3800002c);
+    uint8_t marker[BS_HEADER_BYTES] = {0};
+    bs_put_le32(marker, 0x38000000u | (BS_HEADER_BYTES - 4));
     bs_put_le32(marker + 8, 9);
     bs_put_le32(marker + 12, 1);
     bs_put_le32(marker + 24, 0x38000014);
@@ -268,7 +268,7 @@ static void test_all_sample_values(void)
 static void test_image(void)
 {
     uint32_t state = 0;
-    CHECK(sizeof(mt7921_image) == 1664);
+    CHECK(sizeof(mt7921_image) == 1680);
     for (size_t i = 0; i < sizeof(mt7921_image); i += 4) {
         uint32_t bits = state & 0x10921111, parity = 0;
         while (bits) { parity ^= bits & 1; bits >>= 1; }

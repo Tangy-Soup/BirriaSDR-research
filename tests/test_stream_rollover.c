@@ -22,11 +22,25 @@ static void terminal_count(uint64_t received, uint32_t submitted, int expected)
     birriasdr_dev_t dev = {.backend = &backend, .control_mutex = PTHREAD_MUTEX_INITIALIZER};
     struct bs_reader reader = {.dev = &dev};
     struct bs_framer framer = {.packets = received};
-    uint8_t bytes[BS_USB_BYTES];
     atomic_init(&dev.run_state, BS_CANCELLING);
     dev.io.context = &model;
-    CHECK(receive_loop(&dev, &reader, &framer, 0, bytes) == expected);
+    CHECK(receive_loop(&dev, &reader, &framer, 0) == expected);
     CHECK(pthread_mutex_destroy(&dev.control_mutex) == 0);
+}
+
+/* An aggregate of whole 1,024-byte packets arrives with four zero bytes, which
+ * are not events; any other length, or a nonzero pad, passes or fails as is.
+ */
+static void packet_pad(void)
+{
+    static uint8_t bytes[57 * 1024 + 4];
+    size_t length = sizeof(bytes);
+    CHECK(event_bytes(bytes, &length) == 0 && length == 57 * 1024);
+    length = 7 * BS_FRAME_BYTES;
+    CHECK(event_bytes(bytes, &length) == 0 && length == 7 * BS_FRAME_BYTES);
+    bytes[sizeof(bytes) - 1] = 1;
+    length = sizeof(bytes);
+    CHECK(event_bytes(bytes, &length) == BIRRIASDR_ERROR_PROTOCOL);
 }
 
 int main(void)
@@ -36,6 +50,7 @@ int main(void)
     terminal_count((UINT64_C(1) << 32) + 1, 1, 0);
     terminal_count((UINT64_C(2) << 32) + 17, 17, 0);
     terminal_count((UINT64_C(1) << 32) + 1, 0, BIRRIASDR_ERROR_PROTOCOL);
+    packet_pad();
     puts("Terminal packet rollover tests passed");
     return 0;
 }

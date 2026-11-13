@@ -163,7 +163,7 @@ static void test_backpressure(void)
     birriasdr_dev_t dev = {.stream_continuous = true, .recovery_limit = 1,
                           .recovery_callback = unused_gap};
     struct bs_reader *reader;
-    uint8_t bytes[BS_USB_BYTES];
+    const uint8_t *bytes;
     size_t length;
     reset_mock(160, 0);
     CHECK(bs_reader_create(&dev, 4, &reader) == 0);
@@ -174,11 +174,11 @@ static void test_backpressure(void)
     CHECK(mock.completions == 36 && mock.count == 0);
     pthread_mutex_unlock(&mock.mutex);
     for (unsigned i = 1; i <= 160; ++i) {
-        CHECK(bs_reader_take(reader, bytes, &length, 1000) == 0);
+        CHECK(bs_reader_take(reader, &bytes, &length, 1000) == 0);
         CHECK(length == 16 && bytes[0] == i && bytes[15] == i);
         if (i % 20 == 0) bs_sleep_us(1000);
     }
-    CHECK(bs_reader_take(reader, bytes, &length, 5) == BIRRIASDR_ERROR_TIMEOUT);
+    CHECK(bs_reader_take(reader, &bytes, &length, 5) == BIRRIASDR_ERROR_TIMEOUT);
     bs_reader_destroy(reader);
     /* 36 transfers filled the 32-slot queue and parked the other four. */
     CHECK(dev.usb_stats.completions == 160 && dev.usb_stats.queue_capacity == 32);
@@ -194,9 +194,9 @@ static void test_backpressure(void)
     CHECK(bs_reader_create(&dev, 4, &reader) == 0);
     CHECK(bs_reader_start(reader) == 0);
     wait_completions(36);
-    CHECK(bs_reader_take(reader, bytes, &length, 1000) == 0);
+    CHECK(bs_reader_take(reader, &bytes, &length, 1000) == 0);
     CHECK(bytes[0] == 1 && length == 16);
-    CHECK(bs_reader_take(reader, bytes, &length, 1000) == BIRRIASDR_ERROR_IO);
+    CHECK(bs_reader_take(reader, &bytes, &length, 1000) == BIRRIASDR_ERROR_IO);
     bs_reader_destroy(reader);
     reset_mock(0, 0);
 }
@@ -208,7 +208,7 @@ int main(void)
 {
     birriasdr_dev_t dev = {0};
     struct bs_reader *reader;
-    uint8_t bytes[BS_USB_BYTES];
+    const uint8_t *bytes;
     size_t length;
 #ifdef TEST_WRAP_ALLOCATIONS
     for (unsigned i = 1; i <= 12; ++i) {
@@ -230,10 +230,10 @@ int main(void)
     CHECK(bs_reader_create(&dev, 4, &reader) == 0);
     CHECK(bs_reader_start(reader) == 0);
     for (unsigned i = 1; i <= 8; ++i) {
-        CHECK(bs_reader_take(reader, bytes, &length, 1000) == 0);
+        CHECK(bs_reader_take(reader, &bytes, &length, 1000) == 0);
         CHECK(length == 16 && bytes[0] == i && bytes[15] == i);
     }
-    CHECK(bs_reader_take(reader, bytes, &length, 5) == BIRRIASDR_ERROR_TIMEOUT);
+    CHECK(bs_reader_take(reader, &bytes, &length, 5) == BIRRIASDR_ERROR_TIMEOUT);
     bs_reader_destroy(reader);
     for (unsigned i = 1; i <= 4; ++i) {
         reset_mock(0, i);
@@ -244,7 +244,7 @@ int main(void)
     reset_mock(8, 5);
     CHECK(bs_reader_create(&dev, 4, &reader) == 0);
     CHECK(bs_reader_start(reader) == 0);
-    CHECK(bs_reader_take(reader, bytes, &length, 1000) == BIRRIASDR_ERROR_IO);
+    CHECK(bs_reader_take(reader, &bytes, &length, 1000) == BIRRIASDR_ERROR_IO);
     bs_reader_destroy(reader);
     /* The OS's USB transfer memory limit (Linux usbfs_memory_mb) surfaces as
      * NO_MEM from submission, at startup or on resubmission; it gets its own
@@ -255,7 +255,7 @@ int main(void)
         CHECK(bs_reader_create(&dev, 4, &reader) == 0);
         if (i) {
             CHECK(bs_reader_start(reader) == 0);
-            CHECK(bs_reader_take(reader, bytes, &length, 1000) == BIRRIASDR_ERROR_USB_MEMORY);
+            CHECK(bs_reader_take(reader, &bytes, &length, 1000) == BIRRIASDR_ERROR_USB_MEMORY);
         } else {
             CHECK(bs_reader_start(reader) == BIRRIASDR_ERROR_USB_MEMORY);
         }
@@ -267,7 +267,7 @@ int main(void)
         mock.status = i ? LIBUSB_TRANSFER_ERROR : LIBUSB_TRANSFER_NO_DEVICE;
         CHECK(bs_reader_create(&dev, 4, &reader) == 0);
         CHECK(bs_reader_start(reader) == 0);
-        CHECK(bs_reader_take(reader, bytes, &length, 1000) ==
+        CHECK(bs_reader_take(reader, &bytes, &length, 1000) ==
               (i ? BIRRIASDR_ERROR_IO : BIRRIASDR_ERROR_NO_DEVICE));
         bs_reader_destroy(reader);
     }
@@ -284,7 +284,7 @@ int main(void)
         CHECK(bs_now_ns() < deadline);
         bs_sleep_us(1000);
     }
-    CHECK(bs_reader_take(reader, bytes, &length, 1000) == BIRRIASDR_ERROR_OVERRUN);
+    CHECK(bs_reader_take(reader, &bytes, &length, 1000) == BIRRIASDR_ERROR_OVERRUN);
     bs_reader_destroy(reader);
     reset_mock(0, 0);
     test_backpressure();

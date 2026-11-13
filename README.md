@@ -74,7 +74,7 @@ flowchart LR
 
 The host programs the radio front end and the capture engine directly through
 their registers. The capture engine writes samples into the chip's internal
-memory. A small original device program, only 1,664 bytes and loaded through the
+memory. A small original device program, only 1,680 bytes and loaded through the
 chip's built-in boot ROM, sends that memory to the host over USB. The library
 then checks the stream and hands complex samples to the application.
 
@@ -126,7 +126,7 @@ For more detail, see:
 | Reference clock | On-board 40 MHz crystal |
 | Host interface | Bulk transfers over USB 3.0 at about 161 MB/s |
 | Output format | Interleaved signed 16-bit I and Q (`cs16`). Buffers from the API are native-endian, and recorder files are little-endian |
-| Firmware | Original 1,664-byte RAM program. No vendor firmware and nothing flashed |
+| Firmware | Original 1,680-byte RAM program. No vendor firmware and nothing flashed |
 | Host platforms | Linux, tested on a Raspberry Pi 5, and macOS, tested on an Apple Silicon Mac |
 
 ### Fork and upstream compared
@@ -561,7 +561,7 @@ directory.
 | Antenna | `RX` only |
 | Settings | `auto_gain` (`host` or `released`, default `host`: what automatic gain mode does), `packet_detect_suppression` (applies at the next stream start; discard about the first 250 ms), `channel_filter` (capture after the digital channel filter; applies at the next stream start) and `max_restarts` (recovery budget, default 16) |
 | Timestamps | `readStream` sets `SOAPY_SDR_HAS_TIME`. `timeNs` counts samples since activation at the nominal rate; across a gap it adds the lost interval measured on the host clock (about 1 ms uncertainty). It labels samples; it is not a hardware clock |
-| Stream arguments | `bufflen` (complex samples per USB buffer, default 65536), `buffers` (host ring depth, default 64) and `transfers` (queued USB transfers, default 192, or 256 on macOS; on Linux the total must fit usbcore's `usbfs_memory_mb`, 16 MB by default) |
+| Stream arguments | `bufflen` (complex samples per USB buffer, default 65536), `buffers` (host ring depth, default 64) and `transfers` (queued USB transfers, default 192, or 256 on macOS; on Linux the library lowers it to fit usbcore's `usbfs_memory_mb`, about 119 at the default 16 MB) |
 
 The module uses automatic recovery. Each source gap, recovered fault or buffer
 dropped because the application fell behind is reported once, as
