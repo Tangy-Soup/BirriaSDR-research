@@ -938,13 +938,27 @@ class FdCombineTests(unittest.TestCase):
                          {'wf0': 2, 'wf1': 2, 'mrc': 2, 'fd': 3, 'mrc_only': 0, 'fd_only': 1})
         self.assertEqual(result['valid_frames'], 3)
 
-    def test_fd_branch_runs_only_on_5ghz_channels(self):
+    def test_fd_skips_legacy_candidates_at_2_4ghz(self):
+        # At 2.4 GHz fd decodes only HT PPDUs the other branches left incomplete.
         x0, x1, frame = two_chain_ofdm(.6, 1)
         with tempfile.TemporaryDirectory() as folder:
             result, packets = wifi.analyze(write_interleaved(folder, x0, x1), 2412, [1], phy='ofdm',
                                            dc_block=65536, combine=True)
-        self.assertEqual(set(result['combine']['branch_valid_frames']), {'wf0', 'wf1', 'mrc', 'mrc_only'})
-        self.assertFalse(any('fd' in p.get('branches', []) for p in packets))
+        self.assertEqual(result['combine']['branch_valid_frames']['fd'], 0)
+        self.assertFalse(any(p['fcs_ok'] and p['frame'] == frame for p in packets))
+        fd = [d for d in result['diagnostics'] if d.get('branch') == 'fd']
+        self.assertEqual([(d['fd_targets'], d['stf_candidates']) for d in fd], [(0, 0)])
+
+    def test_fd_decodes_a_weak_ht_ppdu_at_2_4ghz(self):
+        x0, x1, mpdu = two_chain_ht_slots(4, True, 10, 3)
+        with tempfile.TemporaryDirectory() as folder:
+            result, packets = wifi.analyze(write_interleaved(folder, x0, x1), 2412, [1], phy='ofdm',
+                                           dc_block=65536, combine=True)
+        weak = [p for p in packets if p['fcs_ok'] and p['frame'] == mpdu]
+        self.assertEqual([p['branches'] for p in weak], [['fd']])
+        self.assertTrue(weak[0]['fd_ht'])
+        fd = [d for d in result['diagnostics'] if d.get('branch') == 'fd']
+        self.assertEqual(fd[0]['fd_targets'], 1)
 
     def test_subcarrier_weights_have_unit_noise_and_reach_the_optimum(self):
         noise = (1.0, .5, .35 + .2j)
@@ -991,6 +1005,24 @@ def two_chain_ht(mcs, short_gi, snr_db, seed, taps=((1, .5j, -.3, .2), (.4, -.7,
         y = y * np.exp(2j * np.pi * 20e3 * np.arange(len(y)) / rx.FS)
         chains.append((y + sigma * (rng.normal(size=len(y)) + 1j * rng.normal(size=len(y)))).astype(np.complex64))
     return chains, mpdu, (2 * sigma ** 2, 2 * sigma ** 2, 0j)
+
+
+def two_chain_ht_slots(mcs, short_gi, snr_db, seed):
+    """two_chain_ht as --chain both slots: 40 MSps, unit in-band noise between the
+    frames as well, 32 LSB per unit and a static DC offset."""
+    body = beacon() + bytes(300)
+    mpdu = body + zlib.crc32(body).to_bytes(4, 'little')
+    wave, _ = ht_wave(mcs, short_gi=short_gi, mpdus=[mpdu])
+    wave = wave / np.sqrt(np.mean(np.abs(wave) ** 2)) * np.sqrt(10 ** (snr_db / 10))
+    rng = np.random.default_rng(seed)
+    slots = []
+    for h in ((1, .5j, -.3, .2), (.4, -.7, .3j, .5)):
+        h = np.array(h) / np.sqrt(np.sum(np.abs(h) ** 2))
+        y = np.r_[np.zeros(20000), np.convolve(wave, h), np.zeros(20000)]
+        y = y * np.exp(2j * np.pi * 20e3 * np.arange(len(y)) / rx.FS)
+        y = y + (rng.normal(size=len(y)) + 1j * rng.normal(size=len(y))) / np.sqrt(2)
+        slots.append(32 * (signal.resample_poly(y, 2, 1) + (-60 + 40j)))
+    return slots[0], slots[1], mpdu
 
 
 class FdHtTests(unittest.TestCase):

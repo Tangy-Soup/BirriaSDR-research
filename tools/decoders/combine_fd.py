@@ -250,15 +250,26 @@ def _decode_legacy_timed(y0, y1, ltf, omega, noise):
     return first
 
 
-def decode_channel(x0, x1, xb, center, channel, noise, threshold=0.5):
+# A record's sample (L-LTF - 192) lies in [candidate - 160, candidate + 288): decode_candidate
+# looks for the L-LTF 32..480 samples after the STF candidate.
+TARGET_SPAN = (-200, 300)
+
+
+def decode_channel(x0, x1, xb, center, channel, noise, threshold=0.5, targets=None):
     """wifi_ofdm.decode_channel for the fd branch: candidates of xb, decoded from x0 and x1
-    (40 MSps slots, slot 1 delayed like xb; xb from combine.Combiner)."""
+    (40 MSps slots, slot 1 delayed like xb; xb from combine.Combiner). With targets
+    (record samples on the same 20 MSps grid), only candidates near one are decoded."""
     off = (W.channel_mhz(channel) - center) * 1e6
     if abs(off) > 9e6:
         raise ValueError('Channel is too far from capture center for a complete 20 MHz channel')
     y0, y1, yb = (resample.resample_poly(shift(x, off), 1, 2) for x in (x0, x1, xb))
     packets, candidates, previous = [], 0, -1000
+    targets = None if targets is None else np.sort(np.asarray(targets, dtype=np.int64))
     for at, cfo in W.detect_stf(yb, threshold):
+        if targets is not None:
+            i = np.searchsorted(targets, at + TARGET_SPAN[0])
+            if i == len(targets) or targets[i] > at + TARGET_SPAN[1]:
+                continue
         candidates += 1
         packet = decode_candidate(y0, y1, yb, at, cfo, noise)
         if packet is None or abs(packet['sample'] - previous) < 80:

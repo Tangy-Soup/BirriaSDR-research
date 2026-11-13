@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import struct
 
+import numpy as np
+
 import cs16
 from cs16 import load
 import combine as combine_mod
@@ -116,20 +118,45 @@ def fd_streams(combiner, start, count):
     return x0, x1d, combiner.samples(start, count, (x0, x1, x1d))
 
 
-def decode_window_fd(streams, center, channels, noise, stf_threshold):
-    """decode_window's OFDM part for the fd branch (combine_fd.decode_channel)."""
+def decode_window_fd(streams, center, channels, noise, stf_threshold, targets=None):
+    """decode_window's OFDM part for the fd branch (combine_fd.decode_channel).
+    targets maps a channel to the record samples its fd decode is limited to."""
     packets, diagnostics = [], []
     for ch in channels:
         if abs(wifi_b.channel_mhz(ch) - center) > 9:
             raise ValueError(f'Channel {ch} is outside the reliable interior of this capture; retune to its center')
-        found, candidates = combine_fd.decode_channel(*streams, center, ch, noise, stf_threshold)
+        only = None if targets is None else targets.get(ch, [])
+        found, candidates = combine_fd.decode_channel(*streams, center, ch, noise, stf_threshold, only)
         for p in found:
             p['phy'] = 'OFDM'
         packets.extend(found)
-        diagnostics.append({'channel': ch, 'phy': 'OFDM', 'stf_candidates': candidates,
-                            'valid_lsig_headers': sum(p.get('mpdu_index', 0) == 0 for p in found),
-                            'statuses': dict(Counter(p['status'] for p in found))})
+        detail = {'channel': ch, 'phy': 'OFDM', 'stf_candidates': candidates,
+                  'valid_lsig_headers': sum(p.get('mpdu_index', 0) == 0 for p in found),
+                  'statuses': dict(Counter(p['status'] for p in found))}
+        if only is not None:
+            detail['fd_targets'] = len(only)
+        diagnostics.append(detail)
     return packets, diagnostics
+
+
+def fd_targets(found, channel):
+    """2.4 GHz fd targets: samples of non-STBC HT PPDUs that the other branches saw
+    (found: their records for this window) but none decoded completely. At 2.4 GHz
+    fd's gain is HT (2026-11-12: 23 of 25 frames) and decoding every candidate costs
+    about half again the --combine time."""
+    def complete(p):
+        return p['fcs_ok'] and p.get('ampdu_valid') == p.get('ampdu_subframes')
+    ht = [p for p in found if p['channel'] == channel and p['phy'] == 'OFDM' and p.get('ofdm_format') == 'ht'
+          and not p.get('mpdu_index')]
+    done = np.sort([p['sample'] for p in ht if complete(p)])
+    out = []
+    for s in sorted(p['sample'] for p in ht
+                    if not (p['stbc'] or complete(p) or p['status'] == 'ht_unsupported')):
+        i = np.searchsorted(done, s - 80)
+        if (i < len(done) and done[i] <= s + 80) or (out and s - out[-1] <= 80):
+            continue  # decoded completely by some branch, or the same PPDU from another branch
+        out.append(int(s))
+    return out
 
 
 BRANCHES = ('wf0', 'wf1', 'mrc', 'fd')   # --combine: chain 0, chain 1, whitened combination, per subcarrier
@@ -195,8 +222,8 @@ def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_t
 
     combine=True reads a two-slot interleaved recording (birria_rx --chain both)
     and decodes three branches: chain 0, chain 1, and their noise-whitened
-    combination (combine.Combiner, one per channel). For OFDM on 5 GHz
-    channels a fourth branch, fd, combines the chains per subcarrier at the
+    combination (combine.Combiner, one per channel). For OFDM a fourth
+    branch, fd, combines the chains per subcarrier at the
     combined stream's STF candidates (combine_fd). FCS-valid frames from any branch count once
     (merge_branches); times and durations count per-slot samples (40 MSps). It
     needs dc_block, since both-chain slots carry DC.
@@ -240,9 +267,10 @@ def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_t
             branches += [('mrc', [ch], lambda ch=ch: combiners[ch].samples(start, end - start))
                          for ch in channels if combiners[ch].usable]
             if phy in ('both', 'ofdm'):
-                # 5 GHz only: at 2.4 GHz blanking and HT traffic leave fd 1% more frames for 60% more time.
+                # 2.4 GHz too since 2026-11-12 (frame detectors off, combine_fd's HT rebuild), but
+                # there only for HT PPDUs the other branches left incomplete (fd_targets).
                 branches += [('fd', [ch], lambda ch=ch: fd_streams(combiners[ch], start, end - start))
-                             for ch in channels if combiners[ch].usable and ch > 14]
+                             for ch in channels if combiners[ch].usable]
         else:
             branches = [(None, channels, lambda: load(path, start=start, count=end - start, dc_block=dc_block,
                                                        slot=slot, of=of))]
@@ -250,7 +278,12 @@ def analyze(path, center, channels, phy='both', threshold_db=6, min_us=60, stf_t
         for branch, decoded, read in branches:
             x = read()
             if branch == 'fd':
-                found, details = decode_window_fd(x, center, decoded, combiners[decoded[0]].noise, stf_threshold)
+                targets = None
+                if decoded[0] <= 14:
+                    seen = [p for _, _, _, found, _ in results for p in found]
+                    targets = {decoded[0]: fd_targets(seen, decoded[0])}
+                found, details = decode_window_fd(x, center, decoded, combiners[decoded[0]].noise, stf_threshold,
+                                                  targets)
             else:
                 found, details = decode_window(x, center, decoded, phy, threshold_db, min_us,
                                                stf_threshold, dsss_sync_search, cck, recover)

@@ -292,9 +292,10 @@ without `--of`, an interleaved file decodes nothing useful.
 
 `--combine` decodes three branches and counts each FCS-valid frame once:
 chain 0, chain 1, and a noise-whitened combination of the two
-(`combine.py`). For OFDM on 5 GHz channels it adds a fourth branch, `fd`,
-which combines the two chains per subcarrier (`combine_fd.py`, below). Every
-frame records the branches that decoded it (`branches`, e.g.
+(`combine.py`). For OFDM it adds a fourth branch, `fd`, which combines the
+two chains per subcarrier (`combine_fd.py`, below). At 2.4 GHz `fd` decodes
+only the non-STBC HT PPDUs that the other three branches left incomplete.
+Every frame records the branches that decoded it (`branches`, e.g.
 `["wf0", "mrc", "fd"]`), and the JSON's `combine` section gives per-branch
 counts (`mrc_only` and `fd_only` = frames only that branch decoded) and, per
 channel, the estimated slot-1 delay and noise correlation. It implies
@@ -337,10 +338,19 @@ channel, the estimated slot-1 delay and noise correlation. It implies
     [findings §9](../../docs/findings.md#9-5-ghz-observations).
   - **Cost:** 44 to 87 s per 1 s recording for all four branches (single
     thread, nice 19).
-  - **Only at 5 GHz.** On a busy 2.4 GHz channel-11 recording (with blanking
-    and HT traffic), `fd` alone decoded 223 frames to `mrc`'s 351. It added
-    4 to the union's 360 (lost none) for 61% more decode time (282 → 454 s),
-    so `--combine` runs it only on channels above 14.
+  - **2.4 GHz: HT targets only** (2026-11-12, three 1 s both-chain
+    recordings on a busy channel 1). The frame detectors are off since
+    2026-11-10, so no blanking erases the first symbol after L-SIG.
+    - `fd` on every candidate added 25 frames to `--combine`'s 1,731 for 56%
+      more time (177 → 276 s). 23 of the 25 were HT MPDUs.
+    - So at 2.4 GHz `fd` revisits only the non-STBC HT PPDUs that wf0, wf1
+      and mrc saw but none decoded completely (`wifi.fd_targets`). That gives
+      +23 valid frames (1,731 → 1,754, HT MPDUs 436 → 459, none lost) for
+      26% more time (174 → 220 s).
+    - 18 of the 22 new PPDU records needed the HT rebuild. The other 4 are
+      long-GI frames that the legacy-timed stream already handles.
+    - On an earlier channel-11 recording made with blanking, `fd` on every
+      candidate had added 4 of 360 frames for 61% more time.
 - **`fd` for HT** (2026-11-12). The first virtual stream keeps legacy symbol
   timing and the 52 legacy carriers, so it cuts a short-GI HT payload
   (72-sample symbols) wrongly and drops carriers ±27/28. When that decode is
@@ -456,7 +466,9 @@ frame through the virtual stream with independent per-chain channels, a
 chain-1 lag and a CFO. The HT rebuild tests decode a short-GI MCS 7 A-MPDU
 that the legacy-timed stream cannot, and a weak MCS 4 one neither chain
 decodes. They also decode with the sync two samples early or late, and keep
-the first result when the rebuild adds nothing.
+the first result when the rebuild adds nothing. At 2.4 GHz, `fd` skips a weak
+legacy frame (no targets) and decodes a weak HT PPDU that wf0, wf1 and mrc
+all miss.
 Real capture results are saved alongside their input recordings.
 
 On the existing one-second channel 1 recording, the original decoder found 27
