@@ -20,6 +20,7 @@ WITH_DECODERS=0
 WITH_SDRPP=0
 SKIP_PACKAGES=0
 RUN_TESTS=1
+JOBS=""
 # SDR++ has no stable plugin ABI, so the Soapy source and SDR++ itself are
 # built from one commit. This one was used with the module on 2026-11-13.
 SDRPP_COMMIT=8c9f5ee
@@ -37,6 +38,8 @@ Options:
   --all               --decoders and --sdrpp
   --skip-packages     don't run apt
   --skip-tests        don't run ctest
+  --jobs N            parallel compile jobs (default: the CPU count, but at
+                      most one per GiB of available memory)
 EOF
 }
 
@@ -50,11 +53,27 @@ while [ $# -gt 0 ]; do
         --all) WITH_DECODERS=1; WITH_SDRPP=1 ;;
         --skip-packages) SKIP_PACKAGES=1 ;;
         --skip-tests) RUN_TESTS=0 ;;
+        --jobs) JOBS="$2"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
     shift
 done
+
+if [ -n "${JOBS}" ] && ! [ "${JOBS}" -ge 1 ] 2>/dev/null; then
+    echo "--jobs takes a whole number, 1 or more." >&2
+    exit 2
+fi
+
+# Compile jobs: limited by free memory as well as cores, because a compiler
+# killed for memory (common in WSL2 with a memory cap) fails late and
+# cryptically. SDR++'s compiles peak at about 0.5 GiB each; budget 1 GiB.
+if [ -z "${JOBS}" ]; then
+    mem_mib=$(( $(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1024 ))
+    JOBS=$(( mem_mib / 1024 ))
+    [ "${JOBS}" -lt 1 ] && JOBS=1
+    [ "${JOBS}" -gt "$(nproc)" ] && JOBS=$(nproc)
+fi
 
 if [ "${WITH_SDRPP}" = 1 ] && [ "${WITH_SOAPY}" = 0 ]; then
     echo "--sdrpp needs the SoapySDR module; drop --no-soapy." >&2
@@ -84,6 +103,8 @@ if [ "$(id -u)" = 0 ]; then
 fi
 
 step "Machine: $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}"), kernel $(uname -r)$([ ${IS_WSL} = 1 ] && echo ', WSL2')"
+note "$(nproc) CPUs, $(( $(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) / 1024 )) MiB memory available"
+note "compile jobs: ${JOBS} (change with --jobs N)"
 
 # --- packages -------------------------------------------------------------
 if [ "${SKIP_PACKAGES}" = 0 ]; then
@@ -106,7 +127,12 @@ step "Building BirriaSDR in ${ROOT}/build"
 soapy_flag=OFF
 [ "${WITH_SOAPY}" = 1 ] && soapy_flag=ON
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBIRRIASDR_SOAPY="${soapy_flag}"
-cmake --build build -j"$(nproc)"
+if ! cmake --build build -j"${JOBS}"; then
+    echo >&2
+    echo "The BirriaSDR build failed. If the log above shows 'Killed' or signal 9," >&2
+    echo "the compiler ran out of memory: rerun with --jobs 1." >&2
+    exit 1
+fi
 if [ "${RUN_TESTS}" = 1 ]; then
     step "Running the offline tests (no dongle needed)"
     ctest --test-dir build --output-on-failure
@@ -202,7 +228,13 @@ if [ "${WITH_SDRPP}" = 1 ]; then
         -DOPT_BUILD_AIRSPY_SOURCE=OFF -DOPT_BUILD_AIRSPYHF_SOURCE=OFF \
         -DOPT_BUILD_HACKRF_SOURCE=OFF -DOPT_BUILD_PLUTOSDR_SOURCE=OFF \
         -DOPT_BUILD_RTL_SDR_SOURCE=OFF -DOPT_BUILD_DISCORD_PRESENCE=OFF
-    cmake --build "${SDRPP_DIR}/build" -j"$(nproc)"
+    if ! cmake --build "${SDRPP_DIR}/build" -j"${JOBS}"; then
+        echo >&2
+        echo "The SDR++ build failed, so nothing was installed. If the log above" >&2
+        echo "shows 'Killed' or signal 9, the compiler ran out of memory: rerun the" >&2
+        echo "same command with --jobs 1. The build resumes where it stopped." >&2
+        exit 1
+    fi
     ${SUDO} cmake --install "${SDRPP_DIR}/build"
     ${SUDO} ldconfig
     if [ "${IS_WSL}" = 1 ]; then

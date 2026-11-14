@@ -17,8 +17,11 @@ You need:
   EDUP EP-AX1672) or the COMFAST `3574:6211`.
 - a **USB 3** port. The receiver refuses a USB 2 link.
 - Ubuntu 24.04 (native or WSL2) or a similar Debian-based system, with about
-  2 GB free for the build and SDR++. Recordings take 160 MB per second at
-  40 MSps.
+  2 GB of disk free for the build and SDR++. Recordings take 160 MB per
+  second at 40 MSps.
+- about 1 GB of memory per parallel compile. The script runs as many
+  compiles as the free memory allows, so a WSL2 machine capped at 3 GB still
+  builds SDR++, just more slowly. `--jobs N` overrides the choice.
 
 ## Windows with WSL2
 
@@ -30,12 +33,17 @@ You need:
    winget install --exact dorssel.usbipd-win
    ```
 
-   Open Ubuntu from the Start menu once and create your Linux user.
+   Open Ubuntu from the Start menu once and create your Linux user. If an
+   Ubuntu window was already open when you installed usbipd-win, commands
+   typed there won't find `usbipd` until `wsl --shutdown`, because Windows
+   programs started from WSL keep the old Windows PATH. The attach script
+   finds it anyway, and typed commands can use the full path
+   `"/mnt/c/Program Files/usbipd-win/usbipd.exe"`.
 
 2. **Get the code.** In the Ubuntu terminal, either clone the release tag:
 
    ```sh
-   git clone --branch v2026.11.13 https://github.com/Tangy-Soup/BirriaSDR-research.git
+   git clone --branch v2026.11.13.1 https://github.com/Tangy-Soup/BirriaSDR-research.git
    cd BirriaSDR-research
    ```
 
@@ -61,11 +69,19 @@ You need:
    powershell.exe -ExecutionPolicy Bypass -File "$(wslpath -w setup/windows/attach-dongle.ps1)"
    ```
 
-   The first time, Windows shows a UAC prompt for `usbipd bind --force`, and
-   the script then asks you to **unplug and replug the dongle**. Windows' own
-   Wi-Fi driver may already have loaded its firmware onto the chip, which
-   BirriaSDR can't clear, and the replug starts the chip clean. The forced
-   bind keeps Windows' driver off the dongle from then on.
+   The first time, the script binds the dongle with `usbipd bind --force`.
+   It counts down for three seconds, then Windows shows a UAC prompt for
+   **usbipd-win**: approve it. Next, **unplug the dongle and plug it back
+   in**. Windows' own Wi-Fi driver may already have loaded its firmware onto
+   the chip, which BirriaSDR can't clear, and the replug starts the chip
+   clean. The script watches for the dongle to disappear and come back, so it
+   can't carry on before the replug. It gives up after five minutes and keeps
+   the bind. The forced bind keeps Windows' driver off the dongle from then
+   on.
+
+   Before that first bind, Device Manager may show the dongle as
+   "Wireless_Device" with a yellow warning sign (Code 28, no driver
+   installed). That is expected, and the bind replaces it.
 
 5. **Check it.**
 
@@ -84,7 +100,7 @@ time.
 ## Native Linux
 
 ```sh
-git clone --branch v2026.11.13 https://github.com/Tangy-Soup/BirriaSDR-research.git
+git clone --branch v2026.11.13.1 https://github.com/Tangy-Soup/BirriaSDR-research.git
 cd BirriaSDR-research
 bash setup/setup-linux.sh --all
 ```
@@ -143,6 +159,11 @@ lowered the 2.4 GHz noise floor by another 4 to 7 dB. Details are under
 | usbipd says "Device in error state" | Unplug and replug, then rerun the attach script. If Windows put a different driver on it, the script's forced bind fixes that |
 | Overruns (firmware state 9) in bursts | Usually transient on usbipd. Wait a few minutes and retry. If they persist after days of uptime, restart the service from an admin PowerShell: `Restart-Service usbipd` |
 | SDR++ uses several CPU cores, or shows device gaps | It is rendering on the CPU. Start it with `GALLIUM_DRIVER=d3d12 sdrpp` |
+| The UAC prompt was declined, closed or never seen | Nothing changed. Rerun the attach script and approve the prompt. It can open behind other windows, so check the taskbar |
+| The attach script gave up waiting for the replug | The bind is kept. Replug the dongle, then rerun the script, which goes straight to attaching |
+| "Wireless_Device" with a yellow sign (Code 28) in Device Manager | Normal before the first bind: Windows has no driver for it. The forced bind replaces it |
+| A build stops with `Killed` or signal 9 | The compiler ran out of memory. Rerun the same `setup-linux.sh` command with `--jobs 1`. It resumes where the build stopped |
+| `cmake --install` says it cannot find a `.so` file | The build didn't finish. Rerun `setup-linux.sh`, which builds before it installs, rather than running `cmake --install` on its own |
 | `birria_rx` refuses to overwrite a file | By design. Pick a new file name |
 
 ## Updating
