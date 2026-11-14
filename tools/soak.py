@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Soak test: stream through SoapySDR for a long time and discard the samples.
 
-  tools/soak.py [--minutes 120] [--freq-mhz 2437] [--rate 40e6] [--out DIR]
+  tools/soak.py [--minutes 120] [--freq-mhz 2437] [--rate 40e6] [--chains 0|0,1] [--out DIR]
 
 Usually started through tools/soak.sh, which waits for the dongle to be idle first.
 
@@ -34,8 +34,10 @@ ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDe
 ap.add_argument('--minutes', type=float, default=120)
 ap.add_argument('--freq-mhz', type=float, default=2437)
 ap.add_argument('--rate', type=float, default=40e6)
+ap.add_argument('--chains', default='0', help='comma-separated channels, e.g. 0,1 for both chains')
 ap.add_argument('--out', default='.')
 a = ap.parse_args()
+chans = [int(c) for c in a.chains.split(',')]
 os.makedirs(a.out, exist_ok=True)
 log = open(os.path.join(a.out, 'soak.jsonl'), 'a', buffering=1)
 
@@ -66,18 +68,20 @@ signal.signal(signal.SIGINT, on_signal)
 dev = SoapySDR.Device('driver=birriasdr')
 dev.setSampleRate(SOAPY_SDR_RX, 0, a.rate)
 dev.setFrequency(SOAPY_SDR_RX, 0, a.freq_mhz * 1e6)
-dev.setGainMode(SOAPY_SDR_RX, 0, True)
+for c in chans:
+    dev.setGainMode(SOAPY_SDR_RX, c, True)
 elements = list(dev.listGains(SOAPY_SDR_RX, 0))
 settings = {s.key: dev.readSetting(s.key) for s in dev.getSettingInfo()}
 log.write(json.dumps({'start': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'freq_mhz': a.freq_mhz,
-                      'rate': dev.getSampleRate(SOAPY_SDR_RX, 0), 'settings': settings,
+                      'rate': dev.getSampleRate(SOAPY_SDR_RX, 0), 'chains': chans, 'settings': settings,
                       'auto': dev.getGainMode(SOAPY_SDR_RX, 0), 'elements': elements}) + '\n')
 if os.path.exists(TASKLIST):
     threading.Thread(target=usbipd_watch, daemon=True).start()
 
-st = dev.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16, [0])
+st = dev.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16, chans)
 dev.activateStream(st)
-buf = np.zeros(2 * 131072, np.int16)
+bufs = [np.zeros(2 * 131072, np.int16) for _ in chans]
+buf = bufs[0]
 t0 = time.time()
 m_prev = time.monotonic()
 end = t0 + a.minutes * 60
@@ -87,6 +91,7 @@ win = dict(tot)
 win_t = t0
 consecutive_timeouts = 0
 rms = None
+rms_all = None
 want_rms = True
 rc = 0
 
@@ -98,11 +103,14 @@ def mark(now, final=False):
     mono_ratio = round((m_now - m_prev) / span, 4) if span > 0 else None
     m_prev = m_now
     gains = {e: round(dev.getGain(SOAPY_SDR_RX, 0, e), 1) for e in elements}
+    if len(chans) > 1:
+        gains.update({'ch%d_%s' % (c, e): round(dev.getGain(SOAPY_SDR_RX, c, e), 1)
+                      for c in chans[1:] for e in elements})
     ru = resource.getrusage(resource.RUSAGE_SELF)
     rec = {'t_min': round((now - t0) / 60, 2), 'samples': win['samples'],
            'rate_msps': round(win['samples'] / span / 1e6, 4) if span > 0 else None,
            'mono_ratio': mono_ratio, 'overflows': win['overflows'], 'timeouts': win['timeouts'], 'other_errors': win['other_errors'],
-           'gain_db': round(dev.getGain(SOAPY_SDR_RX, 0), 1), 'gains': gains, 'rms': rms,
+           'gain_db': round(dev.getGain(SOAPY_SDR_RX, 0), 1), 'gains': gains, 'rms': rms, 'rms_all': rms_all,
            'usbipd_kb': usbipd_kb[0], 'cpu_s': round(ru.ru_utime + ru.ru_stime, 1)}
     if final:
         rec['final'] = True
@@ -120,7 +128,7 @@ while not stop.is_set():
     if now >= next_mark:
         mark(now)
         next_mark += 60
-    r = dev.readStream(st, [buf], 131072, timeoutUs=1_000_000)
+    r = dev.readStream(st, bufs, 131072, timeoutUs=1_000_000)
     if r.ret > 0:
         consecutive_timeouts = 0
         win['samples'] += r.ret
@@ -128,6 +136,7 @@ while not stop.is_set():
         if want_rms:
             x = buf[:2 * r.ret].astype(np.float32)
             rms = round(float(np.sqrt(np.mean(x * x) * 2)), 1)
+            rms_all = [round(float(np.sqrt(np.mean(b[:2 * r.ret].astype(np.float32) ** 2) * 2)), 1) for b in bufs]
             want_rms = False
     elif r.ret == SOAPY_SDR_OVERFLOW:
         win['overflows'] += 1
