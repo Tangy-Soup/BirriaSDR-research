@@ -116,6 +116,8 @@ int mt_configure_capture(birriasdr_dev_t *dev)
  */
 int mt_start(birriasdr_dev_t *dev)
 {
+    /* A new live window starts with an empty RF shadow (mt7921_rf.c). */
+    dev->mt7921.rf_shadow_count = 0;
     return bs_write32(dev, BS_MMIO, MT_MAILBOX + 60, 1);
 }
 

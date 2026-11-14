@@ -128,9 +128,9 @@ bool mt_frequency_supported(uint64_t frequency_hz)
 static int finish_calibration(birriasdr_dev_t *dev, unsigned port)
 {
     int results[4];
-    results[0] = mt_rf_update(dev, port, 0xcc4, (1u << 29) | (1u << 30), 0);
-    results[1] = mt_rf_update(dev, port, 0xcc8, 1, 0);
-    results[2] = mt_rf_update(dev, port, 0xd20, 0, 4);
+    results[0] = mt_rf_update_tuning(dev, port, 0xcc4, (1u << 29) | (1u << 30), 0);
+    results[1] = mt_rf_update_tuning(dev, port, 0xcc8, 1, 0);
+    results[2] = mt_rf_update_tuning(dev, port, 0xd20, 0, 4);
     results[3] = mt_rf_write(dev, port, 0xce0, 0);
     for (size_t i = 0; i < 4; ++i)
         if (results[i] < 0)
@@ -145,11 +145,11 @@ static int run_calibration(birriasdr_dev_t *dev, unsigned port)
 {
     uint32_t value;
     uint64_t deadline;
-    BS_TRY(mt_rf_update(dev, port, 0xd20, 4, 0));
-    BS_TRY(mt_rf_update(dev, port, 0xcc4, 0, 1u << 30));
+    BS_TRY(mt_rf_update_tuning(dev, port, 0xd20, 4, 0));
+    BS_TRY(mt_rf_update_tuning(dev, port, 0xcc4, 0, 1u << 30));
     BS_TRY(mt_rf_write(dev, port, 0xce0, 0x42956473));
-    BS_TRY(mt_rf_update(dev, port, 0xcc8, 0, 1));
-    BS_TRY(mt_rf_update(dev, port, 0xcc4, 0, 1u << 29));
+    BS_TRY(mt_rf_update_tuning(dev, port, 0xcc8, 0, 1));
+    BS_TRY(mt_rf_update_tuning(dev, port, 0xcc4, 0, 1u << 29));
     deadline = bs_now_ns() + 100000000;
     for (;;) {
         BS_TRY(mt_rf_read(dev, port, 0xd7c, &value));
@@ -159,10 +159,10 @@ static int run_calibration(birriasdr_dev_t *dev, unsigned port)
             return BIRRIASDR_ERROR_TIMEOUT;
         bs_sleep_us(100);
     }
-    BS_TRY(mt_rf_update(dev, port, 0xcc4, 1u << 29, 0));
-    BS_TRY(mt_rf_update(dev, port, 0xcc4, 1u << 30, 0));
+    BS_TRY(mt_rf_update_tuning(dev, port, 0xcc4, 1u << 29, 0));
+    BS_TRY(mt_rf_update_tuning(dev, port, 0xcc4, 1u << 30, 0));
     BS_TRY(mt_rf_read(dev, port, 0xd78, &value));
-    return mt_rf_update(dev, port, 0xc0c, 7u << 22, (value & 7) << 22);
+    return mt_rf_update_tuning(dev, port, 0xc0c, 7u << 22, (value & 7) << 22);
 }
 
 /* Load one synthesizer while its caller owns the complete RF transaction.
@@ -179,16 +179,16 @@ static int tune_plan(birriasdr_dev_t *dev, unsigned port, bool secondary,
     int result, cleanup;
     if (port != MT_RX_PORT && port != MT_SYNTH_PORT)
         return BIRRIASDR_ERROR_INVALID;
-    BS_TRY(mt_rf_update(dev, port, 0x240, 0, 0xf0000000));
-    BS_TRY(mt_rf_update(dev, port, 0x204, 0x00c00000, selector << 22));
-    BS_TRY(mt_rf_update(dev, port, 0x21c, 0x00060000, selector << 17));
-    BS_TRY(mt_rf_update(dev, port, 0x160, 1u << 29, high_vco ? 1u << 29 : 0));
+    BS_TRY(mt_rf_update_tuning(dev, port, 0x240, 0, 0xf0000000));
+    BS_TRY(mt_rf_update_tuning(dev, port, 0x204, 0x00c00000, selector << 22));
+    BS_TRY(mt_rf_update_tuning(dev, port, 0x21c, 0x00060000, selector << 17));
+    BS_TRY(mt_rf_update_tuning(dev, port, 0x160, 1u << 29, high_vco ? 1u << 29 : 0));
     if (plan.preset)
-        BS_TRY(mt_rf_update(dev, port, reg - 0x14, 0xff, plan.preset));
+        BS_TRY(mt_rf_update_tuning(dev, port, reg - 0x14, 0xff, plan.preset));
     BS_TRY(mt_rf_write(dev, port, 0xcf8, 0x90));
     BS_TRY(mt_rf_write(dev, port, reg, plan.word));
     BS_TRY(mt_rf_write(dev, port, reg + 4, plan.calibration_cycles));
-    BS_TRY(mt_rf_update(dev, port, reg + 16, 0x000ffff0, 0x14 * 0x1010));
+    BS_TRY(mt_rf_update_tuning(dev, port, reg + 16, 0x000ffff0, 0x14 * 0x1010));
     result = run_calibration(dev, port);
     cleanup = finish_calibration(dev, port);
     if (result < 0 || cleanup < 0)
@@ -220,12 +220,12 @@ static int select_band(birriasdr_dev_t *dev, bool high, bool band_6g)
         dev->mt7921.band_6g == band_6g)
         return 0;
     dev->mt7921.band_valid = false;
-    BS_TRY(mt_rf_update(dev, MT_SYNTH_PORT, 0xc00, 0x0010003c,
-                        (high ? 0x38 : 0x28) | (band_6g ? 1u << 20 : 0)));
-    BS_TRY(mt_rf_update(dev, MT_RX_PORT, 0x160, 1u << 29, high ? 1u << 29 : 0));
+    BS_TRY(mt_rf_update_tuning(dev, MT_SYNTH_PORT, 0xc00, 0x0010003c,
+                               (high ? 0x38 : 0x28) | (band_6g ? 1u << 20 : 0)));
+    BS_TRY(mt_rf_update_tuning(dev, MT_RX_PORT, 0x160, 1u << 29, high ? 1u << 29 : 0));
     /* High-band tunes set the selected bank's VCO preset; restore the 2.4 GHz one. */
     if (!high)
-        BS_TRY(mt_rf_update(dev, MT_SYNTH_PORT, 0xc94, 0xff, 0x14));
+        BS_TRY(mt_rf_update_tuning(dev, MT_SYNTH_PORT, 0xc94, 0xff, 0x14));
     dev->mt7921.high_band = high;
     dev->mt7921.band_6g = band_6g;
     dev->mt7921.band_valid = true;
@@ -244,9 +244,9 @@ static int retune_selected(birriasdr_dev_t *dev, uint64_t frequency_hz, unsigned
     BS_TRY(high ? mt_plan_5g(frequency_hz, fraction_bits, &plan)
                 : mt_plan_2g(frequency_hz, fraction_bits, &plan));
     BS_TRY(select_band(dev, high, frequency_hz >= MT_RF_6G_PROFILE_HZ));
-    BS_TRY(mt_rf_read(dev, MT_SYNTH_PORT, 0x240, &routing));
+    BS_TRY(mt_rf_read_tuning(dev, MT_SYNTH_PORT, 0x240, &routing));
     result = tune_plan(dev, MT_SYNTH_PORT, true, &plan, high);
-    restore = mt_rf_update(dev, MT_SYNTH_PORT, 0x240, 0xf0000000, routing & 0xf0000000);
+    restore = mt_rf_update_tuning(dev, MT_SYNTH_PORT, 0x240, 0xf0000000, routing & 0xf0000000);
     return result < 0 ? result : restore;
 }
 

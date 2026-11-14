@@ -53,7 +53,7 @@ static void initialize(struct model *model, birriasdr_dev_t *dev, bool enabled)
     memset(dev, 0, sizeof(*dev));
     model->value = baseline;
     atomic_init(&dev->packet_detect_suppression, enabled ? 1u : 0u);
-    dev->io = (struct bs_io){model, read_word, write_word};
+    dev->io = (struct bs_io){.context = model, .read32 = read_word, .write32 = write_word};
 }
 
 int main(void)

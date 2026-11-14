@@ -72,9 +72,38 @@ struct rf_word { uint32_t address, value; };
  * instead of a fresh read; the written word is unchanged. Each USB control
  * transfer costs a round trip (about 0.4 ms over usbipd), and this removes 84
  * of the 231 per live retune. Any failure falls back to the full handshake.
+ *
+ * Live accesses also send the command and data words in one vendor request
+ * (bs_write32x2: the ROM stores the 8-byte payload word by word, so the DATA
+ * write still launches the transfer after COMMAND is set). That removes one
+ * more transfer per access; bring-up keeps the two separate writes.
+ *
+ * The live shadow answers a tuning register's read-modify-write from the last
+ * value this live window read from or wrote to it, so a retune reads only the
+ * registers the chip itself sets (calibration DONE and result, the frequency
+ * readback, the diagnostic word) after its first. Writes, their values and
+ * their order are unchanged. The shadow is emptied at GO, by any access
+ * outside live control and by any failed access. Together these take a live
+ * 2.4 GHz retune from 147 transfers (about 52 ms over usbipd) to 54 (about
+ * 19 ms); verify runs that still read every register found no disagreement in
+ * 800 retunes with the chip's AGC running.
  */
-static int rf_transfer(birriasdr_dev_t *dev, unsigned port, uint32_t address,
-                       uint32_t *value, bool read)
+static uint32_t *shadow_slot(birriasdr_dev_t *dev, unsigned port, uint32_t address, bool create)
+{
+    uint32_t key = port << 16 | address;
+    unsigned count = dev->mt7921.rf_shadow_count;
+    for (unsigned i = 0; i < count; ++i)
+        if (dev->mt7921.rf_shadow[i].key == key)
+            return &dev->mt7921.rf_shadow[i].value;
+    if (!create || count == sizeof(dev->mt7921.rf_shadow) / sizeof(dev->mt7921.rf_shadow[0]))
+        return NULL;
+    dev->mt7921.rf_shadow[count].key = key;
+    dev->mt7921.rf_shadow_count = count + 1;
+    return &dev->mt7921.rf_shadow[count].value;
+}
+
+static int rf_access(birriasdr_dev_t *dev, unsigned port, uint32_t address,
+                     uint32_t *value, bool read)
 {
     const uint32_t base = 0x7c004000;
     unsigned triplet = port == MT_TOP_PORT;
@@ -93,13 +122,79 @@ static int rf_transfer(birriasdr_dev_t *dev, unsigned port, uint32_t address,
         dev->mt7921.rf_command_known[triplet] = true;
     }
     control = dev->mt7921.rf_command_high[triplet] | port << 13 | address | (read ? 0x1000 : 0);
-    BS_TRY(bs_write32(dev, BS_BRIDGE, command, control));
-    BS_TRY(bs_write32(dev, BS_BRIDGE, command + 4, read ? 0 : *value));
-    BS_TRY(bs_poll32(dev, BS_BRIDGE, base, busy, 0, 100));
+    if (live) {
+        BS_TRY(bs_write32x2(dev, BS_BRIDGE, command, control, read ? 0 : *value));
+    } else {
+        BS_TRY(bs_write32(dev, BS_BRIDGE, command, control));
+        BS_TRY(bs_write32(dev, BS_BRIDGE, command + 4, read ? 0 : *value));
+    }
+    if (read || !live || !dev->mt7921.rf_skip_write_poll)
+        BS_TRY(bs_poll32(dev, BS_BRIDGE, base, busy, 0, 100));
     if (read)
         BS_TRY(bs_read32(dev, BS_BRIDGE, command + 8, value));
     dev->mt7921.rf_idle[triplet] = true;
     return 0;
+}
+
+/* Every access keeps the shadow current; any access outside live control, and
+ * any failure, empties it, so it never outlives the live window it came from.
+ */
+static int rf_transfer(birriasdr_dev_t *dev, unsigned port, uint32_t address,
+                       uint32_t *value, bool read)
+{
+    int result;
+    uint32_t *known;
+    result = rf_access(dev, port, address, value, read);
+    if (result < 0 || !dev->control_ready) {
+        dev->mt7921.rf_shadow_count = 0;
+        return result;
+    }
+    known = shadow_slot(dev, port, address, false);
+    if (known)
+        *known = *value;
+    return 0;
+}
+
+/* A tuning register's current value, from the live shadow when it holds one.
+ * Only the tuning sequence's own configuration registers come through here:
+ * never status, calibration results or anything the chip's AGC may change.
+ * The first read of each register in a live window goes to the hardware.
+ * rf_shadow_verify (research only) still reads the hardware every time and
+ * counts disagreements.
+ */
+static int rf_read_tuning(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t *value)
+{
+    uint32_t *known = dev->control_ready ? shadow_slot(dev, port, address, false) : NULL;
+    if (known && !dev->mt7921.rf_shadow_verify) {
+        *value = *known;
+        return 0;
+    }
+    if (known) {
+        uint32_t expected = *known;
+        BS_TRY(mt_rf_read(dev, port, address, value));
+        dev->mt7921.rf_shadow_mismatches += *value != expected;
+        return 0;
+    }
+    BS_TRY(mt_rf_read(dev, port, address, value));
+    if (dev->control_ready) {
+        known = shadow_slot(dev, port, address, true);
+        if (known)
+            *known = *value;
+    }
+    return 0;
+}
+
+int mt_rf_read_tuning(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t *value)
+{
+    return rf_read_tuning(dev, port, address, value);
+}
+
+int mt_rf_update_tuning(birriasdr_dev_t *dev, unsigned port, uint32_t address,
+                        uint32_t clear, uint32_t set)
+{
+    uint32_t value;
+    BS_TRY(rf_read_tuning(dev, port, address, &value));
+    return mt_rf_write(dev, port, address, (value & ~clear) | set);
 }
 
 /* Read one analog register; TOP and Wi-Fi banks are explicitly distinguished. */

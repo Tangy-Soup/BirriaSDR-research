@@ -52,6 +52,17 @@ int bs_write32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address, uint
     return dev->io.write32(dev->io.context, space, address, value);
 }
 
+/* Two consecutive words in one transfer when the transport supports it (the
+ * device stores the first word, then the second); otherwise two writes. */
+int bs_write32x2(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
+                 uint32_t first, uint32_t second)
+{
+    if (dev->io.write32x2)
+        return dev->io.write32x2(dev->io.context, space, address, first, second);
+    BS_TRY(dev->io.write32(dev->io.context, space, address, first));
+    return dev->io.write32(dev->io.context, space, address + 4, second);
+}
+
 /* Preserve unrelated register bits. set may include bits outside clear, matching
  * the decoded Python driver semantics; this is also used for pure set operations.
  */

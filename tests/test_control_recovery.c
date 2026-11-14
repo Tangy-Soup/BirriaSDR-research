@@ -109,7 +109,7 @@ static int trial(birriasdr_dev_t *dev, bool tune, unsigned injections)
     struct birriasdr_stream_stats stats;
     pthread_t worker;
     int manual, result;
-    dev->io = (struct bs_io){&fault, read_word, write_word};
+    dev->io = (struct bs_io){.context = &fault, .read32 = read_word, .write32 = write_word};
     result = birriasdr_set_recovery(dev, 2, gap, &run);
     if (!result && pthread_create(&worker, NULL, change_configuration, &run)) result = BIRRIASDR_ERROR_IO;
     if (!result) {

@@ -15,8 +15,9 @@ struct model {
     bool stuck_standby;
     uint32_t fail_address;
     bool fail_after_write;
-    /* Bridge traffic: busy polls, command-word reads, launched SPI accesses. */
-    unsigned polls, command_reads, accesses;
+    /* Bridge traffic: busy polls, command-word reads, launched SPI accesses,
+     * and two-word (command + data) transfers. */
+    unsigned polls, command_reads, accesses, pairs;
 };
 
 /* A sparse map models register readbacks, not the production implementation. */
@@ -96,12 +97,21 @@ static int write32(void *context, enum bs_space space, uint32_t address, uint32_
     return fail ? BIRRIASDR_ERROR_IO : 0;
 }
 
+/* The transport's two-word write: one transfer, same effect as two writes. */
+static int write32x2(void *context, enum bs_space space, uint32_t address, uint32_t first, uint32_t second)
+{
+    struct model *model = context;
+    ++model->pairs;
+    BS_TRY(write32(context, space, address, first));
+    return write32(context, space, address + 4, second);
+}
+
 /* Seed only independently specified identity, strap, completion and trim values. */
 static void initialize(struct model *model, birriasdr_dev_t *dev)
 {
     memset(model, 0, sizeof(*model));
     memset(dev, 0, sizeof(*dev));
-    dev->io = (struct bs_io){model, read32, write32};
+    dev->io = (struct bs_io){.context = model, .read32 = read32, .write32 = write32};
     dev->frequency = UINT64_C(2437000000);
     dev->rate = 40000000;
     dev->manual = true;
@@ -616,16 +626,46 @@ static void test_live_handshake(void)
     CHECK(count <= 256);
     memcpy(full, &model.writes[before], count * sizeof(*full));
     CHECK(mt_change_frequency(&dev, UINT64_C(2437000000)) == 0);
-    /* The same retune, live: only the post-access polls remain. */
+    /* The same retune, live: only the post-access polls remain, command and
+     * data go in one transfer, and the shadow answers every read of a tuning
+     * register after its first. The RF writes are identical. */
+    dev.io.write32x2 = write32x2;
     dev.control_ready = true;
+    dev.mt7921.rf_shadow_count = 0;
     before = model.written;
-    model.polls = model.command_reads = model.accesses = 0;
+    model.polls = model.command_reads = model.accesses = model.pairs = 0;
     CHECK(mt_change_frequency(&dev, UINT64_C(2412000000)) == 0);
     accesses = model.accesses;
-    CHECK(accesses == 42 && model.polls == accesses && model.command_reads == 0);
+    CHECK(accesses == 21 + 13 && model.polls == accesses && model.command_reads == 0);
+    CHECK(model.pairs == accesses);
     CHECK(model.written - before == count);
     CHECK(!memcmp(full, &model.writes[before], count * sizeof(*full)));
     CHECK((model.command[0] & 0xffff0000u) == 0xabcd0000);
+    /* Warm shadow: only the four chip-set registers are read (calibration
+     * DONE and result, frequency readback, diagnostic word). */
+    CHECK(mt_change_frequency(&dev, UINT64_C(2437000000)) == 0);
+    before = model.written;
+    model.polls = model.command_reads = model.accesses = model.pairs = 0;
+    CHECK(mt_change_frequency(&dev, UINT64_C(2412000000)) == 0);
+    CHECK(model.accesses == 21 + 4 && model.pairs == model.accesses);
+    CHECK(model.written - before == count);
+    CHECK(!memcmp(full, &model.writes[before], count * sizeof(*full)));
+    /* Verify mode reads the hardware anyway and finds no disagreement. */
+    dev.mt7921.rf_shadow_verify = true;
+    before = model.written;
+    model.accesses = 0;
+    CHECK(mt_change_frequency(&dev, UINT64_C(2437000000)) == 0);
+    CHECK(mt_change_frequency(&dev, UINT64_C(2412000000)) == 0);
+    CHECK(dev.mt7921.rf_shadow_mismatches == 0);
+    CHECK(!memcmp(full, &model.writes[model.written - count], count * sizeof(*full)));
+    dev.mt7921.rf_shadow_verify = false;
+    /* A register changed behind the shadow is caught by verify mode. */
+    put(&model, 16, 0x204, get(&model, 16, 0x204) ^ 0x1);
+    dev.mt7921.rf_shadow_verify = true;
+    CHECK(mt_change_frequency(&dev, UINT64_C(2437000000)) == 0);
+    CHECK(dev.mt7921.rf_shadow_mismatches == 1);
+    dev.mt7921.rf_shadow_verify = false;
+    dev.io.write32x2 = NULL;
     /* A failed live access: the next access polls first again. A failed live
      * retune still rolls back (covered above) and leaves the bridge idle. */
     model.fail_address = 0xce0;
@@ -637,11 +677,15 @@ static void test_live_handshake(void)
     CHECK(model.accesses == 1 && model.polls == 2 && dev.mt7921.rf_idle[0]);
     CHECK(mt_rf_read(&dev, MT_SYNTH_PORT, 0xca8, &value) == 0);
     CHECK(model.accesses == 2 && model.polls == 3);
-    /* Leaving live control restores the full handshake. */
+    CHECK(dev.mt7921.rf_shadow_count == 0);
+    /* Leaving live control restores the full handshake and empties the shadow. */
+    CHECK(mt_change_frequency(&dev, UINT64_C(2437000000)) == 0);
+    CHECK(dev.mt7921.rf_shadow_count > 0);
     dev.control_ready = false;
     model.polls = model.command_reads = model.accesses = 0;
     CHECK(mt_rf_read(&dev, MT_SYNTH_PORT, 0xca8, &value) == 0);
     CHECK(model.polls == 2 && model.command_reads == 1);
+    CHECK(dev.mt7921.rf_shadow_count == 0);
 }
 
 /* Entire RF regression suite is read/write-model based and never opens USB. */

@@ -31,7 +31,7 @@ int mt_rf_update(birriasdr_dev_t *d,unsigned p,uint32_t a,uint32_t mask,uint32_t
 static void init(struct model *m,birriasdr_dev_t *d,uint32_t rate,unsigned chain,bool filtered) {
     memset(m,0,sizeof(*m));memset(d,0,sizeof(*d));d->rate=rate;
     atomic_init(&d->receive_chain,chain);atomic_init(&d->channel_filter,filtered);
-    d->io=(struct bs_io){m,read32,write32};
+    d->io=(struct bs_io){.context=m,.read32=read32,.write32=write32};
     *word(m,0x800210b8)=0x50020000; // stale packer must be cleared
     *word(m,0x830ad448)=rate==MT_RATE_80?0x500c0000:0x50080000;
     *word(m,0x1e4)=0x23c1;

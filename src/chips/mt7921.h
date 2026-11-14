@@ -93,6 +93,10 @@ int mt_rf_read(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t *
 int mt_rf_write(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t value);
 int mt_rf_update(birriasdr_dev_t *dev, unsigned port, uint32_t address,
                  uint32_t clear, uint32_t set);
+/* Tuning-sequence registers only: answered from the live shadow when enabled. */
+int mt_rf_read_tuning(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t *value);
+int mt_rf_update_tuning(birriasdr_dev_t *dev, unsigned port, uint32_t address,
+                        uint32_t clear, uint32_t set);
 int mt_configure_rf(birriasdr_dev_t *dev);
 int mt_configure_filter(birriasdr_dev_t *dev);
 int mt_validate_bandwidth(uint32_t bandwidth);

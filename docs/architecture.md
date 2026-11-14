@@ -166,7 +166,11 @@ The tuning tests check exact divider words, fractional carry, arithmetic bounds
 and quantization error. By default, tuning uses all 20 fractional bits. The
 register model checks that startup, live API updates and rollback preserve both
 low bits. It also checks retune routing restoration, calibration cleanup, live
-rollback and rejection of wider private probes while capture is active.
+rollback and rejection of wider private probes while capture is active. A live
+retune must write exactly the same RF words in the same order as a full
+handshake, whether its read-modify-writes come from the hardware or the live
+register shadow, and the shadow must empty outside live control and after a
+failed access.
 Public-range tests cover the exact inclusive endpoints and out-of-range
 requests. These tests establish software behavior, not additional physical
 tuning coverage.

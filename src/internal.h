@@ -26,10 +26,17 @@ enum bs_run_state { BS_IDLE, BS_RUNNING, BS_CANCELLING, BS_CONTROL_FAILED };
 /* Register I/O is injectable for ordered hardware-sequence and failure tests.
  * It keeps RF code independent of libusb packet details without hiding errors.
  */
+/* For research tools built against several source trees. */
+#define BS_IO_HAS_WRITE32X2 1
+#define BS_HAS_RF_SHADOW 1
+
 struct bs_io {
     void *context;
     int (*read32)(void *, enum bs_space, uint32_t, uint32_t *);
     int (*write32)(void *, enum bs_space, uint32_t, uint32_t);
+    /* Optional: write two consecutive words, first then second, in one
+     * transfer. NULL means two write32 calls. */
+    int (*write32x2)(void *, enum bs_space, uint32_t, uint32_t, uint32_t);
 };
 
 /* One contiguous tuning interval; backends list them in ascending order. */
@@ -137,6 +144,16 @@ struct birriasdr_dev {
          */
         bool rf_idle[2], rf_command_known[2];
         uint32_t rf_command_high[2];
+        /* Live retune shadow: the last value read from or written to each
+         * tuning register during this live window (see mt7921_rf.c).
+         */
+        struct { uint32_t key, value; } rf_shadow[32];
+        unsigned rf_shadow_count;
+        /* Research only, never set by the library: read the hardware anyway
+         * and count shadow disagreements; skip the busy poll after live writes.
+         */
+        bool rf_shadow_verify, rf_skip_write_poll;
+        uint64_t rf_shadow_mismatches;
     } mt7921;
     struct birriasdr_stream_stats stats;
     struct birriasdr_usb_stats usb_stats;
@@ -177,6 +194,8 @@ int bs_usb_prepare_endpoints(birriasdr_dev_t *dev);
 int bs_usb_recover(birriasdr_dev_t *dev);
 int bs_read32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address, uint32_t *value);
 int bs_write32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address, uint32_t value);
+int bs_write32x2(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
+                 uint32_t first, uint32_t second);
 int bs_update32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
                 uint32_t clear, uint32_t set);
 int bs_poll32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,

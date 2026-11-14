@@ -80,7 +80,7 @@ static void initialize_filtered(struct model *model, birriasdr_dev_t *dev, unsig
     memcpy(model->value, baseline, sizeof(baseline));
     atomic_init(&dev->receive_chain, chain);
     atomic_init(&dev->channel_filter, filtered ? 1u : 0u);
-    dev->io = (struct bs_io){model, read_word, write_word};
+    dev->io = (struct bs_io){.context = model, .read32 = read_word, .write32 = write_word};
 }
 
 static void initialize(struct model *model, birriasdr_dev_t *dev, unsigned chain)

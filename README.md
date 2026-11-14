@@ -440,8 +440,11 @@ thread can change the center frequency and raw gain, read them back, or call
 `cancel_async`. When the device reports `BIRRIASDR_CAP_LIVE_TUNING` and
 `BIRRIASDR_CAP_LIVE_GAIN`, those changes take effect without restarting capture.
 A retune disturbs the signal phase. It took about 87 ms on the tested
-Raspberry Pi, and about 54 ms over usbipd on Windows after the live RF-bridge
-handshake was shortened (147 USB control transfers instead of 231). Samples
+Raspberry Pi with the original 231 USB control transfers. During capture the
+library now uses a shorter RF-bridge handshake, sends each bridge command and
+its data in one transfer, and remembers the tuning registers it has already
+read or written, so a retune within a band takes 54 transfers: about 19 ms
+over usbipd on Windows (about 21 ms between 2.4 and 5 GHz). Samples
 already queued may still come from the old center after the call returns, and
 the library cannot report the exact sample where the change happened. All other settings can only change while the device is idle. See the
 [tuning details](docs/mt7921.md#changing-frequency-during-capture) and

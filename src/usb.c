@@ -88,6 +88,23 @@ static int usb_write32(void *context, enum bs_space space, uint32_t address, uin
                        (uint16_t)address, bytes, sizeof(bytes));
 }
 
+/* Two consecutive words in one vendor request: the same request as
+ * usb_write32 with an 8-byte payload, which the ROM stores word by word in
+ * order. Used only for the RF bridge's command and data words.
+ */
+static int usb_write32x2(void *context, enum bs_space space, uint32_t address,
+                         uint32_t first, uint32_t second)
+{
+    birriasdr_dev_t *dev = context;
+    uint8_t bytes[8];
+    if (space != BS_BRIDGE)
+        return BIRRIASDR_ERROR_INVALID;
+    bs_put_le32(bytes, first);
+    bs_put_le32(bytes + 4, second);
+    return bs_control(dev, 0x40, 0x66, (uint16_t)(address >> 16),
+                      (uint16_t)address, bytes, sizeof(bytes));
+}
+
 /* ROM command/download packets must be transmitted in full. Never replay a
  * short packet: the ROM may already have consumed part of the command.
  */
@@ -245,7 +262,8 @@ static int claim_device(birriasdr_dev_t *dev, libusb_device *usb, const struct b
         dev->interface_number = -1;
         return bs_usb_error(result);
     }
-    dev->io = (struct bs_io){dev, usb_read32, usb_write32};
+    dev->io = (struct bs_io){.context = dev, .read32 = usb_read32, .write32 = usb_write32,
+                             .write32x2 = usb_write32x2};
     return dev->backend->identify(dev);
 }
 

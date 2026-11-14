@@ -85,7 +85,7 @@ static void trial(int first, int later, bool cancel, bool prior_reset, int reset
     model.later_error = later;
     model.cancel = cancel;
     model.reset_error = reset_error;
-    dev.io = (struct bs_io){&dev, reject_read, reject_write};
+    dev.io = (struct bs_io){.context = &dev, .read32 = reject_read, .write32 = reject_write};
     dev.needs_usb_reset = prior_reset;
     atomic_init(&dev.run_state, BS_RUNNING);
     CHECK(mt_prepare(&dev, 0) == expected);
