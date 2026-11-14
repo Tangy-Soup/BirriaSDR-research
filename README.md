@@ -397,6 +397,36 @@ RSS, and 0.81 CPU-seconds per second (0.54 user, 0.27 system). The same stream
 recorded by `birria_rx` took 0.55 CPU-seconds per second and 160 MB/s of disk,
 so the demodulator adds about a third of a core.
 
+### Band sweep
+
+`birria_sweep` steps one live stream across a band and writes an averaged power
+spectrum per step, as rtl_power-compatible CSV or as JSON lines with the mean and
+peak spectrum:
+
+```sh
+./build/birria_sweep --range 2156:2620 --passes 10 --output sweep24.csv
+./build/birria_sweep --range 4500:6625 --passes 0 --json --output sweep56.jsonl
+./build/birria_sweep --settle-scan 2190 2437 60     # measure settling instead
+```
+
+Ranges are in MHz and are clamped to the board's tuning bands. Each step keeps
+the central `--usable` span (default half the sample rate: the stock 40 MSps
+path folds strong signals from 12 to 16 MHz off center), interpolates the bins
+next to DC across the LO leak and reports dBFS, where a full-scale complex tone
+in one bin reads 0. Gain is forced per band (`--gain24`, default 5/7/0, and
+`--gain5`, default 5/14/0), because released gain can leave the receiver deaf
+for seconds after opening. After each retune the samples of `--settle`
+milliseconds (default 3) are discarded, counted from the delivered sample index
+when the call returned. On the EDUP board the new signal is already final a few
+milliseconds before the call returns, with no transient afterwards, so this
+covers host queueing.
+
+On the EDUP board over usbipd (2026-11-13, 40 MSps, 5 ms dwell), a step takes
+about 30 ms: 2180 to 2620 MHz is 22 steps and repeats every 0.66 s, 4500 to
+6625 MHz is 107 steps and repeats every 3.2 s, and 2.4 GHz at 80 MSps with a
+40 MHz usable span is 12 steps in 0.42 s, all without sample gaps.
+`--self-test` checks the spectrum scale without hardware.
+
 ## API
 
 The library follows the familiar enumerate, open, configure, read, cancel and

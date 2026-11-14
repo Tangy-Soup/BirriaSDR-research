@@ -56,14 +56,18 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     # The FIR and discriminator loops only vectorize with reassociation.
     target_compile_options(birria_ble PRIVATE -O3 -ffast-math)
 endif()
+add_executable(birria_sweep examples/birria_sweep.c)
+target_link_libraries(birria_sweep PRIVATE birriasdr Threads::Threads m)
+target_compile_definitions(birria_sweep PRIVATE _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
 file(RELATIVE_PATH BIRRIA_BIN_TO_LIB "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}")
 if(APPLE)
-    set_target_properties(birria_rx birria_ble PROPERTIES INSTALL_RPATH "@loader_path/${BIRRIA_BIN_TO_LIB}")
+    set_target_properties(birria_rx birria_ble birria_sweep PROPERTIES INSTALL_RPATH "@loader_path/${BIRRIA_BIN_TO_LIB}")
 elseif(UNIX)
-    set_target_properties(birria_rx birria_ble PROPERTIES INSTALL_RPATH "$ORIGIN/${BIRRIA_BIN_TO_LIB}")
+    set_target_properties(birria_rx birria_ble birria_sweep PROPERTIES INSTALL_RPATH "$ORIGIN/${BIRRIA_BIN_TO_LIB}")
 endif()
 
 if(BUILD_TESTING)
+    add_test(NAME sweep_self_test COMMAND birria_sweep --self-test)
     add_executable(test_core tests/test_core.c $<TARGET_OBJECTS:birriasdr_objects>)
     target_include_directories(test_core PRIVATE include src ${LIBUSB_INCLUDE_DIR})
     target_link_libraries(test_core PRIVATE ${LIBUSB_LIBRARY} Threads::Threads)
@@ -199,7 +203,7 @@ endif()
 file(RELATIVE_PATH BIRRIA_PC_TO_PREFIX "${CMAKE_INSTALL_FULL_LIBDIR}/pkgconfig" "${CMAKE_INSTALL_PREFIX}")
 file(RELATIVE_PATH BIRRIA_PC_TO_INCLUDE "${CMAKE_INSTALL_FULL_LIBDIR}/pkgconfig" "${CMAKE_INSTALL_FULL_INCLUDEDIR}")
 configure_file(birriasdr.pc.in birriasdr.pc @ONLY)
-install(TARGETS birriasdr birria_rx birria_ble
+install(TARGETS birriasdr birria_rx birria_ble birria_sweep
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
