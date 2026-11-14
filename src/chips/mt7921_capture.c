@@ -100,7 +100,8 @@ int mt_configure_capture(birriasdr_dev_t *dev)
      * (runs of 49 at 40 MSps), on chain 0 and, at 5 GHz, on chain 1 too: Wi-Fi
      * frames and noise trigger them up to hundreds of times a second. Clearing
      * both stops those runs from the first sample, with no settling, which
-     * --pd-n8 needs. Chain 1's copy at 0x83098200 makes no difference. WFSYS
+     * --pd-n8 needs. Chain 1's copy at 0x83098200 made no difference in mode
+     * 0x11; mode 0x14 at 5 GHz needs it off, with suppression (mt7921_detect.c). WFSYS
      * reset sets them again, so there is nothing to restore (after
      * flipperdevices/BirriaSDR 319f720).
      */
@@ -108,6 +109,9 @@ int mt_configure_capture(birriasdr_dev_t *dev)
     BS_TRY(bs_read32(dev, BS_MMIO, 0x83088200, &value));
     if (value & 0x00600000)
         return BIRRIASDR_ERROR_STATE;
+    /* Before RF tuning, calibration and gain: written later, the suppression
+     * can fail to take hold for a whole read (mt7921_detect.c). */
+    BS_TRY(mt_configure_detect(dev));
     return bs_write32(dev, BS_MMIO, 0x80021090, 0x4f1);
 }
 

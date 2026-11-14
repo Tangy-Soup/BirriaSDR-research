@@ -139,7 +139,8 @@ struct birriasdr_dev {
         bool high_band;
         bool band_6g;
         bool band_valid;
-        uint32_t detect_baseline;
+        uint32_t detect_baseline[3];    /* MT_DETECT_FIELDS */
+        unsigned detect_fields;
         bool detect_saved;
         uint32_t chain_baseline[3], chain_mask[3];
         bool chain_saved;

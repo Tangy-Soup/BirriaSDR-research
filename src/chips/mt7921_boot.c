@@ -308,7 +308,7 @@ static int prepare_once(birriasdr_dev_t *dev, uint32_t packets)
     BS_TRY(bs_update32(dev, BS_MMIO, 0x7400000c, 0xff, 30));
     dev->stats.stage = BIRRIASDR_STAGE_RF;
     BS_TRY(mt_configure_filter(dev));
-    BS_TRY(mt_configure_detect(dev));
+    /* Packet-detect suppression was written in mt_configure_capture(). */
     return mt_configure_chain(dev);
 }
 

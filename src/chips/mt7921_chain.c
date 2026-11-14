@@ -66,11 +66,11 @@
  * blanking: exact-zero runs of 4-12 samples on both chains at once, 230-656
  * a second at 2.4 GHz and 35-400 a second at 5745 MHz, which the frame
  * detectors being off does not stop (mode 0x11 shows none). Packet-detect
- * suppression removes them at 2.4 GHz only some of the time with this library:
- * of six 2437 MHz captures after a 0.6 s discard, one was clean, three blanked
- * for another 0.2-0.6 s and two for the whole second. So plain both-chain
- * capture stays on mode 0x11; this is for applications that want DC-free,
- * alias-free samples and tolerate the zero runs. Measurements: workspace
+ * suppression, written before the RF setup (mt7921_detect.c), stops them in
+ * most reads (median 3 runs/s at 2437 MHz, 4 at 5745 MHz), but about one
+ * 2.4 GHz read in seven still blanks throughout. So plain both-chain capture
+ * stays on mode 0x11; this is for applications that want DC-free, alias-free
+ * samples and tolerate occasional zero runs. Measurements: workspace
  * captures/research_20261113_mode14 and research_20261114_round3_twochain.
  *
  * Apply once per preparation, after packet-detect suppression and before GO.

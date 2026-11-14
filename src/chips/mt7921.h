@@ -105,6 +105,7 @@ int mt_configure_rf(birriasdr_dev_t *dev);
 int mt_configure_filter(birriasdr_dev_t *dev);
 int mt_validate_bandwidth(uint32_t bandwidth);
 int mt_restore_filter(birriasdr_dev_t *dev);
+#define MT_DETECT_FIELDS 3u
 int mt_configure_detect(birriasdr_dev_t *dev);
 int mt_restore_detect(birriasdr_dev_t *dev);
 int mt_configure_chain(birriasdr_dev_t *dev);
