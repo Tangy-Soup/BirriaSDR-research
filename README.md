@@ -303,7 +303,10 @@ optionally halve the output rate on the host:
 ```
 
 `--channel-filter` moves the capture to the channel-filtered tap. Use it with
-the 20 MHz profile; at 40 MHz it only reduces aliasing. `--rate 20000000`
+the 20 MHz profile; at 40 MHz it only reduces aliasing. With `--chain both` it
+selects the chip's channel-filtered two-chain mode (`0x14`): no DC offset and
+less adjacent-channel fold-in, but short exact-zero runs on both chains (see
+[receive-chain selection](docs/mt7921.md#receive-chain-selection)). `--rate 20000000`
 decimates 2:1 with a halfband filter that is flat to ±8.5 MHz and −6 dB at
 ±10 MHz. Counts and `--discard` are then output samples, the `--pd-n8` default
 discard halves to 12,001,280, and the first 23 output samples of each

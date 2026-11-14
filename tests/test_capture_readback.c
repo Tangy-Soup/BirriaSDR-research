@@ -46,7 +46,10 @@ int main(void) {
         CHECK(!(*word(&m,0x800210b8)&0x20000));
         CHECK((*word(&m,0x830ad448)&0xc0000)==(rate==80?0x80000u:0xc0000u));
         CHECK(!mt_configure_chain(&d));
-        if(c==2) {
+        if(c==2&&f) { // mode 0x14 keeps the 40 MSps rate field [19:18]=3
+            CHECK((*word(&m,0x830ad440)&0xff)==0x14);
+            CHECK((*word(&m,0x830ad448)&0x0fffffff)==0x010c1000);
+        } else if(c==2) {
             CHECK((*word(&m,0x830ad440)&0xff)==0x11);
             CHECK((*word(&m,0x830ad448)&0x033f00ff)==0x0023000c);
         } else CHECK((*word(&m,0x830ad448)&0xf00)==((f?12u:4u)+c)*256);

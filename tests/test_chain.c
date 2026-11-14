@@ -187,11 +187,15 @@ int main(void)
     CHECK(mt_restore_chain(&dev) == 0 && at_baseline(&model));
     test_faults(BIRRIASDR_CHAIN_1, true, successful_operations);
 
-    /* Both chains already read the filtered stage; the filter changes nothing. */
+    /* Channel filter on both chains: mode 0x14, [27:0] of 0x830ad448 replaced. */
     initialize_filtered(&model, &dev, BIRRIASDR_CHAIN_BOTH, true);
     CHECK(mt_configure_chain(&dev) == 0);
-    CHECK(model.value[1] == 0x80000011 && model.value[2] == 0x50a3040c);
+    successful_operations = model.operations;
+    CHECK(model.value[0] == 0x0003fbc3);
+    CHECK(model.value[1] == 0x80000014);
+    CHECK(model.value[2] == ((baseline[2] & 0xf0000000) | 0x010c1000));
     CHECK(mt_restore_chain(&dev) == 0 && at_baseline(&model));
+    test_faults(BIRRIASDR_CHAIN_BOTH, true, successful_operations);
     puts("Receive-chain selection, rollback and readback tests passed");
     return 0;
 }

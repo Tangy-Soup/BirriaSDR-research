@@ -278,9 +278,16 @@ public:
             std::lock_guard<std::mutex> lock(gain_mutex_);
             agcBegin();
         }
-        if (chain == BIRRIASDR_CHAIN_BOTH)
-            SoapySDR::log(SOAPY_SDR_WARNING, "BirriaSDR: both chains carry a static DC offset per chain; "
-                                             "subtract it before demodulating");
+        if (chain == BIRRIASDR_CHAIN_BOTH) {
+            /* The channel filter selects mode 0x14 (no DC) at the next start. */
+            int filtered = staged_filter_ >= 0 ? staged_filter_ : birriasdr_get_channel_filter(dev_);
+            if (filtered)
+                SoapySDR::log(SOAPY_SDR_WARNING, "BirriaSDR: both chains with the channel filter can "
+                                                 "contain short runs of zero samples");
+            else
+                SoapySDR::log(SOAPY_SDR_WARNING, "BirriaSDR: both chains carry a static DC offset per chain; "
+                                                 "subtract it before demodulating");
+        }
         chain_slots_ = chans;
         if (chain != BIRRIASDR_CHAIN_BOTH)
             chain_slots_ = {0};
@@ -757,7 +764,9 @@ public:
             filter.value = "false";
             filter.name = "Channel filter";
             filter.description = "Capture after the PHY's digital channel filter, which follows the bandwidth "
-                                 "profile; best with the 20 MHz profile. Applies at the next stream start";
+                                 "profile; best with the 20 MHz profile. With both channels it selects mode 0x14: no "
+                                 "DC offset and less adjacent-channel fold-in, but short zero runs. Applies at the "
+                                 "next stream start";
             filter.type = SoapySDR::ArgInfo::BOOL;
             settings.push_back(filter);
         }

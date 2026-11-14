@@ -55,8 +55,23 @@
  * centre by about 13 dB against tap 4, with 8% more FCS-valid OFDM frames and
  * the same sample format. At the 40 MHz profile both taps are flat to +/-20 MHz
  * and tap 12 only reduces aliasing; it does not remove it. Mtk79ICAP streams
- * tap 12/13 by default under the vendor firmware. Both-chain capture already
- * reads stage 3 (node 0x0c), so the setting changes nothing there.
+ * tap 12/13 by default under the vendor firmware.
+ *
+ * With both chains the channel filter selects source mode 0x14 instead
+ * (0x830ad440[7:0] = 0x14, 0x830ad448[27:0] = 0x010c1000, after flipper-devel
+ * b94fed5): both chains after the PHY channel filter, same [c0, c1] layout,
+ * 12-bit data (low two bits zero) with no static DC (-1.8 LSB, the rounding)
+ * and the channel-1/11 fold-in at +-12..16 MHz about 15 dB lower than mode
+ * 0x11 at 2437 MHz. Decoder frame counts matched mode 0x11. Its cost is
+ * blanking: exact-zero runs of 4-12 samples on both chains at once, 230-656
+ * a second at 2.4 GHz and 35-400 a second at 5745 MHz, which the frame
+ * detectors being off does not stop (mode 0x11 shows none). Packet-detect
+ * suppression removes them at 2.4 GHz only some of the time with this library:
+ * of six 2437 MHz captures after a 0.6 s discard, one was clean, three blanked
+ * for another 0.2-0.6 s and two for the whole second. So plain both-chain
+ * capture stays on mode 0x11; this is for applications that want DC-free,
+ * alias-free samples and tolerate the zero runs. Measurements: workspace
+ * captures/research_20261113_mode14 and research_20261114_round3_twochain.
  *
  * Apply once per preparation, after packet-detect suppression and before GO.
  * Save each word first, change only the selected fields, verify by readback,
@@ -87,7 +102,14 @@ static void chain_selection(unsigned chain, bool filtered, uint32_t masks[MT_CHA
         masks[0] = 0xffffffff;
         values[0] = MT_WF1_RECEIVE;
     }
-    if (chain == BIRRIASDR_CHAIN_BOTH) {
+    if (chain == BIRRIASDR_CHAIN_BOTH && filtered) {
+        /* Mode 0x14: bit 24 enable, [19:18] = 3 (40 MSps a chain), selector
+         * 0x10 in [15:8]; same [c0, c1] word layout as mode 0x11. */
+        masks[1] = 0xff;
+        values[1] = 0x14;
+        masks[2] = 0x0fffffff;
+        values[2] = 0x010c1000;
+    } else if (chain == BIRRIASDR_CHAIN_BOTH) {
         masks[1] = 0xff;
         values[1] = 0x11;
         masks[2] = 0x033f00ff;
