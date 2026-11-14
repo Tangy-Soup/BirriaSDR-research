@@ -6,7 +6,8 @@
  * One stream runs for the whole sweep; the center is retuned live for each
  * step. After every retune the samples of a settling interval are discarded
  * (counted from the delivered sample index at the moment the call returned, so
- * the interval also covers samples still queued from the previous center).
+ * the interval also covers samples still queued from the previous center and,
+ * with the on-chip retune, the calibration that finishes after the call).
  * The next dwell is averaged into a Hann-windowed power spectrum. Only the
  * central part of each step's span is kept (default 20 MHz of 40 MSps: the
  * stock capture path folds strong signals from 12 to 16 MHz off center), and
@@ -436,8 +437,8 @@ static void usage(const char *name)
             "  --passes N         sweeps to run, 0 = until interrupted (default 1)\n"
             "  --rate HZ          20000000, 40000000 (default) or 80000000\n"
             "  --usable HZ        span kept from each step, also the step (default rate/2)\n"
-            "  --settle MS        discarded after each retune returns (default 3; the\n"
-            "                     signal is final before the call returns on the EDUP)\n"
+            "  --settle MS        discarded after each retune returns (default 4: with the\n"
+            "                     on-chip retune the signal is final about 3 ms after return)\n"
             "  --dwell MS         averaged per step (default 5)\n"
             "  --fft N            power of two (default 1024)\n"
             "  --dc HZ            interpolated each side of DC (default 100000)\n"
@@ -449,7 +450,7 @@ static void usage(const char *name)
 
 int main(int argc, char **argv)
 {
-    struct options o = {.rate = 40e6, .settle_ms = 3, .dwell_ms = 5, .dc_hz = 100e3, .fft = 1024,
+    struct options o = {.rate = 40e6, .settle_ms = 4, .dwell_ms = 5, .dc_hz = 100e3, .fft = 1024,
                         .passes = 1, .gain_low = {5, 7, 0}, .gain_high = {5, 14, 0}};
     for (int i = 1; i < argc; ++i) {
         const char *a = argv[i];

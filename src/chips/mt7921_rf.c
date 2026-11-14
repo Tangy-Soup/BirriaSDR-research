@@ -184,6 +184,16 @@ static int rf_read_tuning(birriasdr_dev_t *dev, unsigned port, uint32_t address,
     return 0;
 }
 
+/* After registers changed behind the host (the on-chip retune): forget the
+ * shadow, then remember one value the caller knows. */
+void mt_rf_shadow_reset(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t value)
+{
+    uint32_t *slot;
+    dev->mt7921.rf_shadow_count = 0;
+    if (dev->control_ready && (slot = shadow_slot(dev, port, address, true)))
+        *slot = value;
+}
+
 int mt_rf_read_tuning(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t *value)
 {
     return rf_read_tuning(dev, port, address, value);

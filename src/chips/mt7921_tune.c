@@ -250,6 +250,163 @@ static int retune_selected(birriasdr_dev_t *dev, uint64_t frequency_hz, unsigned
     return result < 0 ? result : restore;
 }
 
+/* On-chip retune. The firmware's RF script engine (firmware/iq_stream.S) runs
+ * the same register sequence as retune_selected() between sample packets, so a
+ * live retune costs a script upload (skipped when the slot cache has it), one
+ * doorbell write and a few status reads instead of 54 transfers. The script
+ * captures the frequency readback and the diagnostic word into the control
+ * block, so the host checks them with the same status read. The host never
+ * touches the RF bridge while a script runs. A script that does not finish in
+ * FW_TIMEOUT_NS leaves the bridge in an unknown state: the retune fails with
+ * TIMEOUT and is not rolled back through the bridge (mt_change_frequency).
+ */
+#define FW_CTRL 0x02041000u
+#define FW_MAGIC 0x31525446u
+#define FW_SLOTS 0x02041200u
+#define FW_SLOT_BYTES 512u
+#define FW_SLOT_COUNT 64u
+#define FW_TIMEOUT_NS UINT64_C(50000000)
+enum { FW_END, FW_WRITE, FW_UPDATE, FW_POLL, FW_LATCH, FW_CAPTURE };
+
+static size_t fw_op(uint32_t *w, size_t n, size_t capacity, unsigned op, unsigned port,
+                    uint32_t address, uint32_t a, uint32_t b)
+{
+    if (n + 3 > capacity)
+        return capacity + 1;
+    w[n] = (uint32_t)op << 24 | port << 13 | address;
+    w[n + 1] = a;
+    w[n + 2] = b;
+    return n + 3;
+}
+
+/* select_band() (when the band changes), tune_plan(), run_calibration(),
+ * finish_calibration() and the routing restore, in the same order with the
+ * same fields; then capture the readback (slot 0) and 0xd74 (slot 1). */
+size_t mt_fw_script(birriasdr_dev_t *dev, uint64_t frequency_hz, uint32_t routing,
+                    uint32_t *w, size_t capacity, uint32_t *word_out)
+{
+    const unsigned s = MT_SYNTH_PORT;
+    const uint32_t reg = 0xca8, selector = 3;
+    bool high = frequency_hz >= MT_RF_5G_MIN_HZ, band_6g = frequency_hz >= MT_RF_6G_PROFILE_HZ;
+    struct mt_2g_tuning plan;
+    size_t n = 0;
+    if ((high ? mt_plan_5g(frequency_hz, MT_RF_FRACTION_BITS, &plan)
+              : mt_plan_2g(frequency_hz, MT_RF_FRACTION_BITS, &plan)) < 0)
+        return 0;
+    if (!(dev->mt7921.band_valid && dev->mt7921.high_band == high && dev->mt7921.band_6g == band_6g)) {
+        n = fw_op(w, n, capacity, FW_UPDATE, s, 0xc00, 0x0010003c,
+                  (high ? 0x38 : 0x28) | (band_6g ? 1u << 20 : 0));
+        n = fw_op(w, n, capacity, FW_UPDATE, MT_RX_PORT, 0x160, 1u << 29, high ? 1u << 29 : 0);
+        if (!high)
+            n = fw_op(w, n, capacity, FW_UPDATE, s, 0xc94, 0xff, 0x14);
+    }
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0x240, 0, 0xf0000000);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0x204, 0x00c00000, selector << 22);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0x21c, 0x00060000, selector << 17);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0x160, 1u << 29, high ? 1u << 29 : 0);
+    if (plan.preset)
+        n = fw_op(w, n, capacity, FW_UPDATE, s, reg - 0x14, 0xff, plan.preset);
+    n = fw_op(w, n, capacity, FW_WRITE, s, 0xcf8, 0x90, 0);
+    n = fw_op(w, n, capacity, FW_WRITE, s, reg, plan.word, 0);
+    n = fw_op(w, n, capacity, FW_WRITE, s, reg + 4, plan.calibration_cycles, 0);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, reg + 16, 0x000ffff0, 0x14 * 0x1010);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0xd20, 4, 0);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0xcc4, 0, 1u << 30);
+    n = fw_op(w, n, capacity, FW_WRITE, s, 0xce0, 0x42956473, 0);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0xcc8, 0, 1);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0xcc4, 0, 1u << 29);
+    n = fw_op(w, n, capacity, FW_POLL, s, 0xd7c, 1u << 21, 1u << 21);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0xcc4, 1u << 29, 0);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0xcc4, 1u << 30, 0);
+    n = fw_op(w, n, capacity, FW_LATCH, s, 0xc0c, s << 13 | 0xd78, 0);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0xcc4, (1u << 29) | (1u << 30), 0);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0xcc8, 1, 0);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0xd20, 0, 4);
+    n = fw_op(w, n, capacity, FW_WRITE, s, 0xce0, 0, 0);
+    n = fw_op(w, n, capacity, FW_UPDATE, s, 0x240, 0xf0000000, routing & 0xf0000000);
+    n = fw_op(w, n, capacity, FW_CAPTURE, s, reg, 0, 0);
+    n = fw_op(w, n, capacity, FW_CAPTURE, s, 0xd74, 0, 1);
+    n = fw_op(w, n, capacity, FW_END, 0, 0, 0, 0);
+    *word_out = plan.word;
+    return n > capacity ? 0 : n;
+}
+
+static uint64_t fw_key(const uint32_t *words, size_t count)
+{
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (size_t i = 0; i < count; ++i) {
+        hash ^= words[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash ^ count;
+}
+
+/* 1: not handled (use the host path), 0 or a negative error: handled. */
+static int fw_retune(birriasdr_dev_t *dev, uint64_t frequency_hz)
+{
+    uint32_t script[FW_SLOT_BYTES / 4], word, routing, doorbell[2], status[13];
+    bool high = frequency_hz >= MT_RF_5G_MIN_HZ, band_6g = frequency_hz >= MT_RF_6G_PROFILE_HZ;
+    unsigned slot;
+    uint64_t key, deadline;
+    size_t n;
+    if (!dev->control_ready || dev->mt7921.fw_disabled || dev->mt7921.fw_state == 2 ||
+        !dev->io.write_block || !dev->io.read_block)
+        return 1;
+    if (!dev->mt7921.fw_state) {
+        uint32_t magic;
+        BS_TRY(bs_read_words(dev, BS_MMIO, FW_CTRL, &magic, 1));
+        dev->mt7921.fw_state = magic == FW_MAGIC ? 1 : 2;
+        if (dev->mt7921.fw_state == 2)
+            return 1;
+    }
+    BS_TRY(mt_rf_read_tuning(dev, MT_SYNTH_PORT, 0x240, &routing));
+    n = mt_fw_script(dev, frequency_hz, routing, script, FW_SLOT_BYTES / 4, &word);
+    if (!n)
+        return 1;
+    key = fw_key(script, n);
+    for (slot = 0; slot < dev->mt7921.fw_slots && dev->mt7921.fw_slot_key[slot] != key; ++slot) {}
+    if (slot == dev->mt7921.fw_slots) {
+        if (slot == FW_SLOT_COUNT) {
+            slot = dev->mt7921.fw_victim;
+            dev->mt7921.fw_victim = (slot + 1) % FW_SLOT_COUNT;
+        } else {
+            ++dev->mt7921.fw_slots;
+        }
+        dev->mt7921.fw_slot_key[slot] = 0;
+        BS_TRY(bs_write_words(dev, BS_MMIO, FW_SLOTS + slot * FW_SLOT_BYTES, script, n));
+        dev->mt7921.fw_slot_key[slot] = key;
+    }
+    /* The script may change band fields: invalidate first, as select_band() does. */
+    dev->mt7921.band_valid = false;
+    doorbell[0] = FW_SLOTS + slot * FW_SLOT_BYTES;
+    doorbell[1] = ++dev->mt7921.fw_sequence;
+    BS_TRY(bs_write_words(dev, BS_MMIO, FW_CTRL + 4, doorbell, 2));
+    deadline = bs_now_ns() + FW_TIMEOUT_NS;
+    for (;;) {
+        /* done, status, elapsed, scratch +24..+44, captures +48..+60 */
+        BS_TRY(bs_read_words(dev, BS_MMIO, FW_CTRL + 12, status, 13));
+        if (status[0] == doorbell[1])
+            break;
+        if (bs_now_ns() >= deadline) {
+            dev->mt7921.fw_state = 2;
+            dev->mt7921.fw_timed_out = true;
+            dev->mt7921.rf_shadow_count = 0;
+            return BIRRIASDR_ERROR_TIMEOUT;
+        }
+    }
+    dev->mt7921.fw_elapsed_us = status[2];
+    /* The script wrote the tuning registers: keep only the routing it restored. */
+    mt_rf_shadow_reset(dev, MT_SYNTH_PORT, 0x240, routing & 0xf0000000);
+    if (status[1])
+        return status[1] == 1 ? BIRRIASDR_ERROR_TIMEOUT : BIRRIASDR_ERROR_STATE;
+    dev->mt7921.high_band = high;
+    dev->mt7921.band_6g = band_6g;
+    dev->mt7921.band_valid = true;
+    if (status[9] != (word & 0x7fffffff))
+        return BIRRIASDR_ERROR_STATE;
+    return status[10] == 0xfffff400 || status[10] == 0x00000400 ? BIRRIASDR_ERROR_STATE : 0;
+}
+
 /* Program the public tuning interval using all 20 fractional bits.
  * Reject the known diagnostic rails, but do not call unsaturated status PLL
  * lock: the full status fields and absolute RF accuracy remain uncharacterized.
@@ -258,8 +415,12 @@ static int retune_selected(birriasdr_dev_t *dev, uint64_t frequency_hz, unsigned
 int mt_set_frequency(birriasdr_dev_t *dev, uint64_t frequency_hz)
 {
     uint32_t diagnostic;
+    int result;
     if (!mt_frequency_supported(frequency_hz))
         return BIRRIASDR_ERROR_UNSUPPORTED;
+    result = fw_retune(dev, frequency_hz);
+    if (result <= 0)
+        return result;
     BS_TRY(retune_selected(dev, frequency_hz, MT_RF_FRACTION_BITS));
     BS_TRY(mt_rf_read(dev, MT_SYNTH_PORT, 0xd74, &diagnostic));
     return diagnostic == 0xfffff400 || diagnostic == 0x00000400 ?
@@ -277,6 +438,9 @@ int mt_change_frequency(birriasdr_dev_t *dev, uint64_t frequency_hz)
     if (!mt_frequency_supported(frequency_hz))
         return BIRRIASDR_ERROR_UNSUPPORTED;
     result = mt_set_frequency(dev, frequency_hz);
+    /* A script that never finished may still own the bridge: no rollback. */
+    if (dev->mt7921.fw_timed_out)
+        return result < 0 ? result : BIRRIASDR_ERROR_TIMEOUT;
     if (result < 0 && mt_set_frequency(dev, dev->frequency) < 0)
         return BIRRIASDR_ERROR_STATE;
     return result;

@@ -116,8 +116,14 @@ int mt_configure_capture(birriasdr_dev_t *dev)
  */
 int mt_start(birriasdr_dev_t *dev)
 {
-    /* A new live window starts with an empty RF shadow (mt7921_rf.c). */
+    /* A new live window starts with an empty RF shadow (mt7921_rf.c), and a new
+     * firmware run with a cleared script control block (mt7921_tune.c). */
     dev->mt7921.rf_shadow_count = 0;
+    dev->mt7921.fw_state = 0;
+    dev->mt7921.fw_timed_out = false;
+    dev->mt7921.fw_sequence = 0;
+    dev->mt7921.fw_slots = 0;
+    dev->mt7921.fw_victim = 0;
     return bs_write32(dev, BS_MMIO, MT_MAILBOX + 60, 1);
 }
 

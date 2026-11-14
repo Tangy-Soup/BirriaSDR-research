@@ -13,6 +13,11 @@ The PHY gain-register layout was a research lead from w1700k-sdr, subsequently
 checked against this device's ROM and hardware. That chipset's calibration
 tables are not included: https://github.com/h0m3us3r/w1700k-sdr/tree/7f151711eede9bdc0e17763c54bd6f2dc1d10662
 
+The RF script engine in firmware/iq_stream.S (script_step) and the on-chip
+retune protocol in src/chips/mt7921_tune.c follow the MIT-licensed fast-sweep
+patch of BirriaSweep by ZeroTasteGuy, re-implemented for this firmware:
+https://github.com/ZeroTasteGuy/BirriaSweep/blob/6330f40/driver/birriasdr-fast-sweep.patch
+
 libusb is a separate dependency under LGPL-2.1-or-later. The library does not
 embed libusb, NumPy, Python, a vendor ROM dump, or vendor RAM/patch firmware.
 The original device program calls immutable factory-ROM routines already present

@@ -63,6 +63,34 @@ int bs_write32x2(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
     return dev->io.write32(dev->io.context, space, address + 4, second);
 }
 
+/* Word blocks through the transport's block hooks (UNSUPPORTED without them). */
+int bs_write_words(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
+                   const uint32_t *words, size_t count)
+{
+    uint8_t bytes[512];
+    if (!dev->io.write_block)
+        return BIRRIASDR_ERROR_UNSUPPORTED;
+    if (!count || count > sizeof(bytes) / 4)
+        return BIRRIASDR_ERROR_INVALID;
+    for (size_t i = 0; i < count; ++i)
+        bs_put_le32(bytes + 4 * i, words[i]);
+    return dev->io.write_block(dev->io.context, space, address, bytes, (uint16_t)(4 * count));
+}
+
+int bs_read_words(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
+                  uint32_t *words, size_t count)
+{
+    uint8_t bytes[64];
+    if (!dev->io.read_block)
+        return BIRRIASDR_ERROR_UNSUPPORTED;
+    if (!count || count > sizeof(bytes) / 4)
+        return BIRRIASDR_ERROR_INVALID;
+    BS_TRY(dev->io.read_block(dev->io.context, space, address, bytes, (uint16_t)(4 * count)));
+    for (size_t i = 0; i < count; ++i)
+        words[i] = bs_get_le32(bytes + 4 * i);
+    return 0;
+}
+
 /* Preserve unrelated register bits. set may include bits outside clear, matching
  * the decoded Python driver semantics; this is also used for pure set operations.
  */

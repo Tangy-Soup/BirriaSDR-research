@@ -30,6 +30,9 @@ SOFTWARE.
 .equ SLOT_STRIDE, 0x3000
 .equ RING_COUNT, 0x4
 .equ PAYLOAD_BYTES, 0x2000
+.equ CTRL, 0x2041000
+.equ CTRL_MAGIC, 0x31525446
+.equ SPI_BASE, 0x7c004000
 /*
  * Original continuous I/Q exporter from capture SRAM to serial USB DMA.
  * The only ROM call powers on the PHY. No vendor RAM firmware is downloaded.
@@ -67,6 +70,25 @@ SOFTWARE.
  * Recovery drains DMA, stops ICAP, sends and drains this marker, then restarts
  * ICAP at offset zero. It does not reset USB, the PHY, gain or the synthesizer.
  * Only known source faults are recoverable. DMA errors and timeouts still park.
+ *
+ * RF script engine (live retune), after BirriaSweep's fast-sweep patch
+ * (ZeroTasteGuy, MIT). The control block at CTRL, in data memory this program
+ * otherwise leaves alone (payloads go from capture SRAM straight to DMA), is
+ * cleared at boot and then advertises magic "FTR1" at +0. The host stores a
+ * script of 12-byte operations and rings the doorbell with one 8-byte write of
+ * the script address (+4) and a new request number (+8). Between packets the
+ * stream loop calls script_step, which performs at most one SPI-bridge step and
+ * returns, so the stream never waits for it. When the script ends with the
+ * bridge idle it publishes status (+16: 0 ok, 1 poll timeout, 3 bad op), the
+ * elapsed microseconds (+20) and finally the done number (+12) = request.
+ * Words +24 to +44 are its scratch; op 5 stores read values at +48 to +60.
+ * Operation word 0: op << 24 | port << 13 | address; words 1 and 2 are a, b.
+ *   1 write a; 2 read, clear a, set b, write; 3 poll until (value & a) == b,
+ *   at most 2 ms; 4 read the register named by a's low 16 bits, keep bits 2:0
+ *   at 24:22, then read this register, replace its bits 24:22 and write it;
+ *   5 read and store the value at +48 + 4 * b; 0 end.
+ * The host never touches the bridge while a script runs: it holds the control
+ * mutex and waits for the done number.
  */
     .section .text.entry,"ax"
     .global _start
@@ -197,6 +219,18 @@ initialize_slot:
     movi $r0, 1
     swi $r0, [$fp + 28]
     dsb
+    /* RF script control block: clear, then advertise support. */
+    load32 $r1, CTRL
+    movi $r0, 0
+    movi $r2, 16
+clear_ctrl:
+    swi.bi $r0, [$r1], 4
+    addi $r2, $r2, -1
+    bnez $r2, clear_ctrl
+    load32 $r1, CTRL
+    load32 $r0, CTRL_MAGIC
+    swi $r0, [$r1]
+    dsb
     load32 $r0, BOOT_MAGIC
     swi $r0, [$fp]
     dsb
@@ -243,6 +277,7 @@ restart_capture:
 publish:
     lwi $r0, [$fp + 36]
     bnez $r0, stopped
+    jal script_step
     lwi $r0, [$fp + 32]
     beqz $r0, next_packet
     beq $r4, $r0, done
@@ -262,6 +297,7 @@ wait_space:
     slli $r1, $r1, 11
     swi $r1, [$fp + 92]
     observe_source
+    jal script_step
     lwi $r0, [$r6 + 12]
     /* SRAM reads require serial descriptors on this part. Multiple queued
      * SRAM packets have reproduced silent payload corruption. */
@@ -281,6 +317,7 @@ space_ready:
 wait_source:
     lwi $r0, [$fp + 36]
     bnez $r0, stopped
+    jal script_step      /* before observe_source, whose r0 the test below uses */
     observe_source
     slti $r3, $r0, (PAYLOAD_BYTES / 4)
     beqz $r3, source_ready
@@ -462,5 +499,187 @@ timing_fault:
 source_overrun:
     movi $r10, 9
     j drain
+
+    /* SPI launch helpers: r3 = port << 13 | address. Scratch r0/r1. */
+    .macro spi_launch_read
+    load32 $r1, SPI_BASE
+    lwi $r0, [$r1 + 16]
+    srli $r0, $r0, 16
+    slli $r0, $r0, 16
+    or $r0, $r0, $r3
+    ori $r0, $r0, 0x1000
+    swi $r0, [$r1 + 16]
+    movi $r0, 0
+    swi $r0, [$r1 + 20]
+    .endm
+    /* r3 = port << 13 | address, r8 = value. */
+    .macro spi_launch_write
+    load32 $r1, SPI_BASE
+    lwi $r0, [$r1 + 16]
+    srli $r0, $r0, 16
+    slli $r0, $r0, 16
+    or $r0, $r0, $r3
+    swi $r0, [$r1 + 16]
+    swi $r8, [$r1 + 20]
+    .endm
+    .macro low24 reg
+    slli \reg, \reg, 8
+    srli \reg, \reg, 8
+    .endm
+    .macro set_phase value
+    movi $r0, \value
+    swi $r0, [$r9 + 32]
+    .endm
+
+    /* One step of the RF script, called from the stream loop. Uses r0, r1, r3,
+     * r8, r9 and lp only; none is live at the call sites. */
+script_step:
+    load32 $r9, CTRL
+    lwi $r0, [$r9 + 8]
+    lwi $r1, [$r9 + 12]
+    bne $r0, $r1, step_active
+    ret
+step_active:
+    lwi $r8, [$r9 + 44]
+    bnez $r8, step_started
+    lwi $r8, [$r9 + 4]
+    swi $r8, [$r9 + 44]
+    movi $r0, 0
+    swi $r0, [$r9 + 16]
+    swi $r0, [$r9 + 32]
+    load32 $r0, 0x89020068
+    lwi $r0, [$r0]
+    swi $r0, [$r9 + 36]
+step_started:
+    load32 $r0, SPI_BASE
+    lwi $r0, [$r0]
+    andi $r0, $r0, 2
+    beqz $r0, step_idle
+    ret
+step_idle:
+    lwi $r3, [$r8]
+    srli $r0, $r3, 24
+    beqz $r0, step_end
+    lwi $r1, [$r9 + 32]
+    bnez $r1, step_result
+    /* Phase 0: launch the operation's first transaction. */
+    movi $r1, 1
+    beq $r0, $r1, launch_write_a
+    movi $r1, 2
+    beq $r0, $r1, launch_own_read
+    movi $r1, 3
+    beq $r0, $r1, launch_poll
+    movi $r1, 4
+    beq $r0, $r1, launch_latch
+    movi $r1, 5
+    beq $r0, $r1, launch_own_read
+    movi $r0, 3
+    swi $r0, [$r9 + 16]
+    j step_end
+launch_write_a:
+    low24 $r3
+    lwi $r8, [$r8 + 4]
+    spi_launch_write
+    j step_advance
+launch_poll:
+    load32 $r0, 0x89020068
+    lwi $r0, [$r0]
+    swi $r0, [$r9 + 24]
+launch_own_read:
+    low24 $r3
+    spi_launch_read
+    set_phase 1
+    ret
+launch_latch:
+    lwi $r3, [$r8 + 4]
+    low24 $r3
+    spi_launch_read
+    set_phase 1
+    ret
+step_result:
+    /* Phase 1 or 2: the bridge is idle, so the read result is valid. */
+    load32 $r1, SPI_BASE
+    lwi $r0, [$r1 + 24]
+    lwi $r1, [$r9 + 32]
+    movi $r8, 2
+    beq $r1, $r8, latch_write
+    srli $r1, $r3, 24
+    movi $r8, 3
+    beq $r1, $r8, poll_result
+    movi $r8, 4
+    beq $r1, $r8, latch_source
+    movi $r8, 5
+    beq $r1, $r8, capture_result
+    /* Read-modify-write. */
+    lwi $r8, [$r9 + 44]
+    lwi $r1, [$r8 + 4]
+    bitc $r0, $r0, $r1
+    lwi $r1, [$r8 + 8]
+    or $r8, $r0, $r1
+    low24 $r3
+    spi_launch_write
+    j step_advance
+capture_result:
+    lwi $r8, [$r9 + 44]
+    lwi $r1, [$r8 + 8]
+    andi $r1, $r1, 3
+    slli $r1, $r1, 2
+    add $r1, $r1, $r9
+    swi $r0, [$r1 + 48]
+    j step_advance
+poll_result:
+    lwi $r8, [$r9 + 44]
+    lwi $r1, [$r8 + 4]
+    and $r0, $r0, $r1
+    lwi $r1, [$r8 + 8]
+    beq $r0, $r1, step_advance
+    load32 $r0, 0x89020068
+    lwi $r0, [$r0]
+    lwi $r1, [$r9 + 24]
+    sub $r0, $r0, $r1
+    movi $r1, 2000
+    slt $r0, $r1, $r0
+    beqz $r0, poll_again
+    movi $r0, 1
+    swi $r0, [$r9 + 16]
+    j step_advance
+poll_again:
+    low24 $r3
+    spi_launch_read
+    ret
+latch_source:
+    andi $r0, $r0, 7
+    slli $r0, $r0, 22
+    swi $r0, [$r9 + 40]
+    low24 $r3
+    spi_launch_read
+    set_phase 2
+    ret
+latch_write:
+    load32 $r1, 0x01c00000
+    bitc $r0, $r0, $r1
+    lwi $r1, [$r9 + 40]
+    or $r8, $r0, $r1
+    low24 $r3
+    spi_launch_write
+step_advance:
+    lwi $r8, [$r9 + 44]
+    addi $r8, $r8, 12
+    swi $r8, [$r9 + 44]
+    set_phase 0
+    ret
+step_end:
+    load32 $r0, 0x89020068
+    lwi $r0, [$r0]
+    lwi $r1, [$r9 + 36]
+    sub $r0, $r0, $r1
+    swi $r0, [$r9 + 20]
+    movi $r0, 0
+    swi $r0, [$r9 + 44]
+    dsb
+    lwi $r0, [$r9 + 8]
+    swi $r0, [$r9 + 12]   /* publish completion last */
+    dsb
+    ret
     .size _start, .-_start
 

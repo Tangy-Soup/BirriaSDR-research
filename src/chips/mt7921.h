@@ -97,6 +97,10 @@ int mt_rf_update(birriasdr_dev_t *dev, unsigned port, uint32_t address,
 int mt_rf_read_tuning(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t *value);
 int mt_rf_update_tuning(birriasdr_dev_t *dev, unsigned port, uint32_t address,
                         uint32_t clear, uint32_t set);
+void mt_rf_shadow_reset(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t value);
+/* Build the on-chip retune script for a center (exposed for the register-model test). */
+size_t mt_fw_script(birriasdr_dev_t *dev, uint64_t frequency_hz, uint32_t routing,
+                    uint32_t *words, size_t capacity, uint32_t *word_out);
 int mt_configure_rf(birriasdr_dev_t *dev);
 int mt_configure_filter(birriasdr_dev_t *dev);
 int mt_validate_bandwidth(uint32_t bandwidth);

@@ -268,7 +268,7 @@ static void test_all_sample_values(void)
 static void test_image(void)
 {
     uint32_t state = 0;
-    CHECK(sizeof(mt7921_image) == 1680);
+    CHECK(sizeof(mt7921_image) == 2576);
     for (size_t i = 0; i < sizeof(mt7921_image); i += 4) {
         uint32_t bits = state & 0x10921111, parity = 0;
         while (bits) { parity ^= bits & 1; bits >>= 1; }

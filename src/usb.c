@@ -105,6 +105,29 @@ static int usb_write32x2(void *context, enum bs_space space, uint32_t address,
                       (uint16_t)address, bytes, sizeof(bytes));
 }
 
+/* MMIO byte blocks in one vendor request: the register requests with a longer
+ * payload, used only for the on-chip retune's control block and scripts in MCU
+ * data memory. */
+static int usb_write_block(void *context, enum bs_space space, uint32_t address,
+                           const uint8_t *bytes, uint16_t length)
+{
+    birriasdr_dev_t *dev = context;
+    uint8_t copy[512];
+    if (space != BS_MMIO || !length || length > sizeof(copy) || length % 4)
+        return BIRRIASDR_ERROR_INVALID;
+    memcpy(copy, bytes, length);
+    return bs_control(dev, 0x5f, 0x66, (uint16_t)(address >> 16), (uint16_t)address, copy, length);
+}
+
+static int usb_read_block(void *context, enum bs_space space, uint32_t address,
+                          uint8_t *bytes, uint16_t length)
+{
+    birriasdr_dev_t *dev = context;
+    if (space != BS_MMIO || !length || length > 64 || length % 4)
+        return BIRRIASDR_ERROR_INVALID;
+    return bs_control(dev, 0xdf, 0x63, (uint16_t)(address >> 16), (uint16_t)address, bytes, length);
+}
+
 /* ROM command/download packets must be transmitted in full. Never replay a
  * short packet: the ROM may already have consumed part of the command.
  */
@@ -263,7 +286,8 @@ static int claim_device(birriasdr_dev_t *dev, libusb_device *usb, const struct b
         return bs_usb_error(result);
     }
     dev->io = (struct bs_io){.context = dev, .read32 = usb_read32, .write32 = usb_write32,
-                             .write32x2 = usb_write32x2};
+                             .write32x2 = usb_write32x2, .write_block = usb_write_block,
+                             .read_block = usb_read_block};
     return dev->backend->identify(dev);
 }
 

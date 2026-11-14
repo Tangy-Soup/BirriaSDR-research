@@ -688,6 +688,177 @@ static void test_live_handshake(void)
     CHECK(dev.mt7921.rf_shadow_count == 0);
 }
 
+/* The firmware's RF script ops (firmware/iq_stream.S script_step), run on the
+ * model through the same bridge registers the firmware uses. */
+static void rf_bridge(struct model *model, unsigned port, uint32_t address, uint32_t *value, bool read)
+{
+    uint32_t command = (model->command[0] & 0xffff0000u) | port << 13 | address | (read ? 0x1000 : 0);
+    CHECK(write32(model, BS_BRIDGE, 0x7c004010, command) == 0);
+    CHECK(write32(model, BS_BRIDGE, 0x7c004014, read ? 0 : *value) == 0);
+    if (read)
+        CHECK(read32(model, BS_BRIDGE, 0x7c004018, value) == 0);
+}
+
+static void run_script(struct model *model, const uint32_t *w, uint32_t captures[4])
+{
+    for (;; w += 3) {
+        unsigned op = w[0] >> 24, port = (w[0] >> 13) & 7;
+        uint32_t address = w[0] & 0xffc, value, source;
+        if (!op) return;
+        switch (op) {
+        case 1: value = w[1]; rf_bridge(model, port, address, &value, false); break;
+        case 2: rf_bridge(model, port, address, &value, true);
+                value = (value & ~w[1]) | w[2]; rf_bridge(model, port, address, &value, false); break;
+        case 3: rf_bridge(model, port, address, &value, true); CHECK((value & w[1]) == w[2]); break;
+        case 4: rf_bridge(model, (w[1] >> 13) & 7, w[1] & 0xffc, &source, true);
+                rf_bridge(model, port, address, &value, true);
+                value = (value & ~0x01c00000u) | (source & 7) << 22;
+                rf_bridge(model, port, address, &value, false); break;
+        case 5: rf_bridge(model, port, address, &value, true); captures[w[2] & 3] = value; break;
+        default: CHECK(!"bad op");
+        }
+    }
+}
+
+/* The on-chip retune script must write exactly what the host retune writes,
+ * in the same order, for in-band and cross-band moves (including 6 GHz), and
+ * capture the readback and diagnostic words the host would read. */
+static void test_fw_script(void)
+{
+    static const uint64_t moves[][2] = {
+        {UINT64_C(2437000000), UINT64_C(2412000000)}, {UINT64_C(2437000000), UINT64_C(5240000000)},
+        {UINT64_C(5240000000), UINT64_C(2462000000)}, {UINT64_C(5240000000), UINT64_C(6135000000)},
+        {UINT64_C(6455000000), UINT64_C(5180000000)},
+    };
+    for (size_t m = 0; m < sizeof(moves) / sizeof(moves[0]); ++m) {
+        struct model a, b;
+        birriasdr_dev_t host, fw;
+        uint32_t script[128], word, routing, captures[4] = {0};
+        size_t before_a, before_b, n;
+        initialize(&a, &host);
+        initialize(&b, &fw);
+        CHECK(mt_configure_rf(&host) == 0 && mt_configure_rf(&fw) == 0);
+        CHECK(mt_change_frequency(&host, moves[m][0]) == 0 && mt_change_frequency(&fw, moves[m][0]) == 0);
+        host.control_ready = fw.control_ready = true;
+        before_a = a.written;
+        CHECK(mt_change_frequency(&host, moves[m][1]) == 0);
+        routing = get(&b, 16, 0x240);
+        n = mt_fw_script(&fw, moves[m][1], routing, script, 128, &word);
+        CHECK(n && n <= 512 / 4);
+        before_b = b.written;
+        run_script(&b, script, captures);
+        CHECK(a.written - before_a == b.written - before_b);
+        CHECK(!memcmp(&a.writes[before_a], &b.writes[before_b], (a.written - before_a) * sizeof(a.writes[0])));
+        CHECK(captures[0] == (word & 0x7fffffff));
+        CHECK(captures[1] == get(&b, 16, 0xd74));
+    }
+}
+
+/* A fake firmware behind the block hooks: data memory from 0x02041000, the
+ * doorbell runs the script at once (or never, with hang), as script_step would. */
+static struct {
+    struct model *model;
+    uint8_t memory[0x9000];
+    unsigned uploads, doorbells;
+    bool hang, corrupt_readback;
+} fake;
+
+static uint32_t fake_word(uint32_t address)
+{
+    uint32_t o = address - 0x02041000;
+    return (uint32_t)fake.memory[o] | (uint32_t)fake.memory[o + 1] << 8 |
+           (uint32_t)fake.memory[o + 2] << 16 | (uint32_t)fake.memory[o + 3] << 24;
+}
+
+static void fake_put(uint32_t address, uint32_t value)
+{
+    uint32_t o = address - 0x02041000;
+    for (int i = 0; i < 4; ++i)
+        fake.memory[o + i] = (uint8_t)(value >> (8 * i));
+}
+
+static int fake_write_block(void *context, enum bs_space space, uint32_t address,
+                            const uint8_t *bytes, uint16_t length)
+{
+    (void)context;
+    CHECK(space == BS_MMIO && address >= 0x02041000 && address + length <= 0x0204a000);
+    memcpy(&fake.memory[address - 0x02041000], bytes, length);
+    if (address == 0x02041004 && length == 8) {
+        uint32_t script[128], captures[4] = {0};
+        ++fake.doorbells;
+        if (fake.hang)
+            return 0;
+        for (unsigned i = 0; i < 128; ++i)
+            script[i] = fake_word(fake_word(0x02041004) + 4 * i);
+        run_script(fake.model, script, captures);
+        if (fake.corrupt_readback)
+            captures[0] ^= 1;
+        fake_put(0x02041000 + 16, 0);
+        fake_put(0x02041000 + 20, 600);
+        fake_put(0x02041000 + 48, captures[0]);
+        fake_put(0x02041000 + 52, captures[1]);
+        fake_put(0x02041000 + 12, fake_word(0x02041008));
+    } else {
+        ++fake.uploads;
+    }
+    return 0;
+}
+
+static int fake_read_block(void *context, enum bs_space space, uint32_t address, uint8_t *bytes, uint16_t length)
+{
+    (void)context;
+    CHECK(space == BS_MMIO && address >= 0x02041000 && address + length <= 0x0204a000);
+    memcpy(bytes, &fake.memory[address - 0x02041000], length);
+    return 0;
+}
+
+/* Host side of the on-chip retune: the RF writes equal the host path's, a
+ * cached script needs only the doorbell, band changes and the readback check
+ * work, and a script that never finishes fails without a bridge rollback. */
+static void test_fw_retune(void)
+{
+    struct model a, b;
+    birriasdr_dev_t host, fw;
+    size_t before_a, before_b;
+    initialize(&a, &host);
+    initialize(&b, &fw);
+    memset(&fake, 0, sizeof(fake));
+    fake.model = &b;
+    fake_put(0x02041000, 0x31525446);
+    CHECK(mt_configure_rf(&host) == 0 && mt_configure_rf(&fw) == 0);
+    fw.io.write_block = fake_write_block;
+    fw.io.read_block = fake_read_block;
+    host.control_ready = fw.control_ready = true;
+    static const uint64_t plan[] = {UINT64_C(2412000000), UINT64_C(5240000000), UINT64_C(2412000000),
+                                    UINT64_C(5240000000), UINT64_C(6455000000), UINT64_C(2437000000)};
+    for (size_t i = 0; i < sizeof(plan) / sizeof(plan[0]); ++i) {
+        before_a = a.written;
+        before_b = b.written;
+        a.accesses = b.accesses = 0;
+        CHECK(mt_change_frequency(&host, plan[i]) == 0);
+        CHECK(mt_change_frequency(&fw, plan[i]) == 0);
+        CHECK(fw.mt7921.fw_state == 1);
+        CHECK(a.written - before_a == b.written - before_b);
+        CHECK(!memcmp(&a.writes[before_a], &b.writes[before_b], (a.written - before_a) * sizeof(a.writes[0])));
+        CHECK(fw.mt7921.band_valid && fw.mt7921.high_band == host.mt7921.high_band);
+    }
+    /* Distinct scripts: 2412 within 2.4 GHz, 5240 from 2.4 GHz, 2412 from 5 GHz
+     * (with band fields), 6455 and 2437 from 6 GHz. The second 5240 from
+     * 2.4 GHz reuses its slot: six doorbells, five uploads. */
+    if (fake.doorbells != 6 || fake.uploads != 5)
+        fprintf(stderr, "doorbells %u uploads %u\n", fake.doorbells, fake.uploads);
+    CHECK(fake.doorbells == 6 && fake.uploads == 5);
+    /* A wrong readback fails the retune; the host path rolls back. */
+    fake.corrupt_readback = true;
+    CHECK(mt_change_frequency(&fw, UINT64_C(2462000000)) == BIRRIASDR_ERROR_STATE);
+    fake.corrupt_readback = false;
+    /* A script that never finishes: TIMEOUT, firmware path off, no bridge access. */
+    fake.hang = true;
+    b.accesses = 0;
+    CHECK(mt_change_frequency(&fw, UINT64_C(2412000000)) == BIRRIASDR_ERROR_TIMEOUT);
+    CHECK(fw.mt7921.fw_state == 2 && fw.mt7921.fw_timed_out && b.accesses == 0);
+}
+
 /* Entire RF regression suite is read/write-model based and never opens USB. */
 int main(int argc, char **argv)
 {
@@ -703,5 +874,7 @@ int main(int argc, char **argv)
     test_band_switch();
     test_band_switch_failures();
     test_live_handshake();
+    test_fw_script();
+    test_fw_retune();
     return 0;
 }

@@ -29,6 +29,7 @@ enum bs_run_state { BS_IDLE, BS_RUNNING, BS_CANCELLING, BS_CONTROL_FAILED };
 /* For research tools built against several source trees. */
 #define BS_IO_HAS_WRITE32X2 1
 #define BS_HAS_RF_SHADOW 1
+#define BS_HAS_FW_RETUNE 1
 
 struct bs_io {
     void *context;
@@ -37,6 +38,10 @@ struct bs_io {
     /* Optional: write two consecutive words, first then second, in one
      * transfer. NULL means two write32 calls. */
     int (*write32x2)(void *, enum bs_space, uint32_t, uint32_t, uint32_t);
+    /* Optional: little-endian byte blocks in one transfer (MMIO data memory),
+     * up to 512 bytes written or 64 read. NULL disables the on-chip retune. */
+    int (*write_block)(void *, enum bs_space, uint32_t, const uint8_t *, uint16_t);
+    int (*read_block)(void *, enum bs_space, uint32_t, uint8_t *, uint16_t);
 };
 
 /* One contiguous tuning interval; backends list them in ascending order. */
@@ -154,6 +159,13 @@ struct birriasdr_dev {
          */
         bool rf_shadow_verify, rf_skip_write_poll;
         uint64_t rf_shadow_mismatches;
+        /* On-chip retune (mt7921_tune.c): 0 unchecked, 1 available, 2 off for
+         * this capture. fw_disabled is a research knob, never set here. */
+        uint8_t fw_state;
+        bool fw_disabled, fw_timed_out;
+        uint32_t fw_sequence, fw_elapsed_us;
+        uint64_t fw_slot_key[64];
+        unsigned fw_slots, fw_victim;
     } mt7921;
     struct birriasdr_stream_stats stats;
     struct birriasdr_usb_stats usb_stats;
@@ -196,6 +208,10 @@ int bs_read32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address, uint3
 int bs_write32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address, uint32_t value);
 int bs_write32x2(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
                  uint32_t first, uint32_t second);
+int bs_write_words(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
+                   const uint32_t *words, size_t count);
+int bs_read_words(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
+                  uint32_t *words, size_t count);
 int bs_update32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
                 uint32_t clear, uint32_t set);
 int bs_poll32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
