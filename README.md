@@ -13,6 +13,8 @@
 > - chain 1 and both-chain capture, the post-filter channel tap, 20 and 80 MSps,
 >   and a per-chain gain table in dB;
 > - `birria_ble`, a streaming BLE advertising collector, and `birria_rx --recover`;
+> - a live retune of about 1.2 ms, run by the device program, and `birria_sweep`,
+>   a stepped band sweep;
 > - Python Wi-Fi and BLE decoders in [tools/decoders](tools/decoders/README.md).
 >
 > The measurements behind these, including what didn't work, are in
@@ -20,9 +22,11 @@
 > foil shield that removed most of it are covered under
 > [antenna placement and shielding](#antenna-placement-and-shielding).
 >
-> Upstream has moved on since `cbe0575`. Its `main` at `8ddab14` (30 October
+> Upstream has moved on since `cbe0575`. Its `main` at `3b22772` (13 November
 > 2026) has its own SoapySDR module, a UDP sender and 10, 20 and 80 MSps, each
-> built differently from the versions here. This fork is not rebased onto it.
+> built differently from the versions here. Its 6 GHz extension (pull request
+> #19) matches this fork's port apart from two code comments. This fork is not
+> rebased onto it.
 > The differences are listed under
 > [fork and upstream compared](#fork-and-upstream-compared).
 >
@@ -136,19 +140,22 @@ For more detail, see:
 
 Upstream merged its own versions of several of this fork's additions after the
 fork was based. This table compares the fork's `soapysdr-module` branch with
-upstream `main` at `8ddab14`, as each project documents it:
+upstream `main` at `3b22772`, as each project documents it:
 
 | | This fork | Upstream `main` |
 | --- | --- | --- |
-| Base | Upstream `cbe0575` (25 October 2026), not rebased | `8ddab14` (30 October 2026) |
+| Base | Upstream `cbe0575` (25 October 2026), not rebased | `3b22772` (13 November 2026) |
+| Tuning range | 2156 to 2610 MHz and 4500 to 6615 MHz, with pull request #19 ported | The same, since pull request #19 |
 | Sample rates | 40 MSps, plus 20 MSps from a 2:1 halfband filter on the host, flat to ±8.5 MHz, with unchanged USB traffic. The 80 MSps rate is experimental and 2.4 GHz only | 10, 20, 40 and 80 MSps from the device. At 10 and 20 MSps the chip packs samples from a faster tap, and 10 MSps halves the USB traffic |
-| Receive chains | Chain 0, chain 1, or both interleaved | Chain 0 |
+| Receive chains | Chain 0, chain 1, or both interleaved: mode `0x11`, or mode `0x14` (no DC offset, but occasional zero runs) with `--channel-filter` | Chain 0 |
+| Live retune | About 1.2 ms over usbipd, run by the device program from an RF script. Without it, a 54-transfer host path takes about 19 ms | About 87 ms on a Raspberry Pi |
+| Device program | 2,576 bytes: Flipper's 128-byte events and 128 KiB USB transfers, plus the RF script engine | 1,632 bytes |
 | Gain | Raw codes, with filter stage 0 to 15 at 5 GHz, or an overall gain from measured relative dB tables. The Soapy module's automatic mode runs a slow host gain loop | Raw codes, filter stage 0 to 8. Not in dB |
-| Capture blanking | Frame detectors switched off at every capture, and `--pd-n8` removes the remaining short runs | Not documented on `main`; the frame-detector change is in Flipper's `flipper-devel` |
+| Capture blanking | Frame detectors switched off at every capture, and `--pd-n8`, written before the RF setup, removes the remaining short runs | Not documented on `main`; the frame-detector change is in Flipper's `flipper-devel` |
 | Channel-filtered tap | `--channel-filter` | No. The 10 MSps rate uses a narrower digital filter |
 | SoapySDR module | `driver=birriasdr`, opt-in build flag. Sample-count timestamps, 20 or 40 MHz bandwidth, and settings for blanking suppression, the channel-filtered tap and the restart budget | `driver=birria`, built whenever SoapySDR is installed. All four native rates, with rate changes while streaming. No timestamps or bandwidth control |
 | Network output | None | `birria_udp`, raw CS16 over UDP |
-| Other tools | `birria_ble`, `birria_rx --recover`, and the Python Wi-Fi and BLE decoders | None |
+| Other tools | `birria_ble`, `birria_sweep`, `birria_rx --recover`, a hardware smoke suite and a SoapySDR soak in `tools/`, and the Python Wi-Fi and BLE decoders | None |
 | Tested hardware | EDUP EP-AX1672 (`0e8d:7961`) under WSL2 and usbipd | COMFAST `3574:6211` on a Raspberry Pi 5 and macOS, and a generic-ID board |
 
 The two SoapySDR modules have different driver keys and file names, but both

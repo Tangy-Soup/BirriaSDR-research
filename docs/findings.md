@@ -84,7 +84,9 @@ moving from `0x14` to `0x15`, and 120 live retunes across 5 and 6 GHz all
 succeeded. Reception is still checked here only from 5180 to 5815 MHz: no 6 GHz
 transmitter is in range. The PR's author received a Wi-Fi 7 access point from
 6135 to 6615 MHz on another EDUP board, and a Flipper One's onboard MT7921
-decoded a test transmitter up to 7200 MHz. See [mt7921.md](mt7921.md#5-ghz-and-6-ghz).
+decoded a test transmitter up to 7200 MHz. Upstream merged the PR on 13 November
+as `3b22772`. Its code matches this port apart from two comments. See
+[mt7921.md](mt7921.md#5-ghz-and-6-ghz).
 
 ## 2. Summary
 
@@ -92,7 +94,9 @@ decoded a test transmitter up to 7200 MHz. See [mt7921.md](mt7921.md#5-ghz-and-6
 | --- | --- | --- |
 | The 0.5–1.4% exact-zero samples come from the PHY packet detector; `0x8300011c[19:16]` = −8 stops them after settling, and clearing the frame detectors (`0x83088200[22:21]`) stops the main runs from the first sample | Established | §3 |
 | The adapter's own USB 3 link couples into antenna A; antenna straight out plus foil shielding brings the 2.4 GHz floor down 8–12 dB | Established | §4 |
+| Packet-detect suppression works better written before the RF setup: with mode `0x14` at 2437 MHz, zero runs fell from a median 226 to 3 per second, though about one read in seven still blanks | Established | §3 |
 | ICAP tap 12 is after the digital channel filter and helps at the 20 MHz profile | Established | §5 |
+| Mode `0x14` gives both chains with no static DC and about 15 dB less channel-1/11 fold-in, but it blanks where mode `0x11` doesn't, so it is opt-in | Established | §5 |
 | Chain 1 can be captured from the ROM-only bring-up, alone or interleaved with chain 0 | Established | §6 |
 | Chain 1 needs `0x1e4` bit 17: it is deaf at 5 GHz without it and level with chain 0 with it | Single run | §6 |
 | Two-chain whitened combining adds frames but no new networks | Established | §6 |
@@ -103,6 +107,8 @@ decoded a test transmitter up to 7200 MHz. See [mt7921.md](mt7921.md#5-ghz-and-6
 | 80 MSps works over usbipd with the Mtk79ICAP 2.4 GHz BW80 recipe | Established | §8 |
 | Host USB queue depth, not USB aggregation, sets the gap rate | Established | §8 |
 | A writer thread with a RAM ring takes 80 MSps recording to disk from over 1,000 gaps in 30 s to single digits | Single comparison | §8 |
+| The device program now runs a live retune from an RF script: about 1.2 ms over usbipd, against 87 ms at first and 19 ms on the host-side path | Established | §8 |
+| 80 MSps for 2 hours and both chains for 1 hour streamed with no overflows and no usbipd memory growth | Single run | §8 |
 | The 2.4 GHz synthesizer calibrates from 2171 to 2652 MHz on this unit. The high VCO range calibrates beyond that but receives nothing under any LO-path value. With upstream PR #19 ported, the high band calibrates from 4250 to at least 7200 MHz and runs to 6615 MHz. Reception is checked here from 5180 to 5815 MHz only, and 6 GHz reception rests on two other units | Established | §1, §12 |
 | Most OFDM `bad_service` failures are 802.11n HT-mixed frames, not blanking | Established | §10 |
 | Per-symbol pilot slope fitting loses weak OFDM frames | Established | §10 |
@@ -185,6 +191,28 @@ detectors. This fork now does that at every capture.
   together on channels 149 and 161 and not on 36 or 48. Switching them off
   removed every run and gained chain 0 about 0.4 dB, but made no significant
   difference to the whole receiver (§9).
+
+**Write it before the RF setup** (established, 14 November). The library used
+to write the packet-detect field last, just before GO. It read back −8
+throughout, yet with mode `0x14` (§5) the triggers sometimes went on for the
+whole read. Flipper's build writes the field at the end of capture
+configuration, before RF tuning, calibration and gain. This fork now does the
+same.
+
+- **At 2437 MHz, mode `0x14`:** over 8 rounds alternating the two orders, a
+  late write gave a median 226 zero runs per second (6 to 908) and an early
+  write 3 (0 to 829). In 14 reads with the early write, 2 still blanked
+  throughout, so `--pd-n8` keeps its 600 ms discard.
+- **The order matters, not the time.** Holding GO back 750 ms after a late
+  write left 2 of 4 reads blanking.
+- **At 5745 MHz chain 1 blanks too.** Chain 1 has its own copy of the field
+  (`0x8301011c`) and its own frame detectors (`0x83098200[22:21]`), which are
+  on after boot and which capture setup used to clear only on chain 0. For
+  both chains at 5 GHz and up, the library now writes all three early: a
+  median 4 runs per second over 13 reads, against 20 to 25 with chain 0's
+  field alone. At 5240 MHz neither order blanked.
+- **Mode `0x11` and single-chain capture** have no zero runs with the
+  detectors off, with either order, so the change can't be measured there.
 
 Implemented as `birriasdr_set_packet_detect_suppression()` and
 `birria_rx --pd-n8`; see [mt7921.md](mt7921.md#packet-detect-suppression).
@@ -274,9 +302,30 @@ filter. This matches Mtk79ICAP.
 Implemented as `birriasdr_set_channel_filter()` (`--channel-filter`, Soapy
 `channel_filter`).
 
-**Other modes.** Mode `0x14` with `0x830ad448` bit 24 gives two interleaved
-40 MSps slots at about 320 MB/s. Other mode bytes return a source timeout
-(firmware state 10) unless their matching enable bit in `0x830ad448` is set.
+**Other modes.** Mode bytes return a source timeout (firmware state 10) unless
+their matching enable bit in `0x830ad448` is set.
+
+**Mode `0x14`, channel-filtered two-chain** (established, 13 and 14 November).
+With `0x830ad448` = `0x010c1000` (bit 24 set), mode `0x14` interleaves both
+chains after the channel filter at 40 MSps each, about 320 MB/s, as in
+Flipper's `flipper-devel` (`b94fed5`). Compared with mode `0x11` (§6) in
+alternating captures with the frame detectors off:
+
+- **No static DC:** −1.8 LSB on both slots, where mode `0x11` carries up to
+  several hundred LSB per slot. The samples are 12-bit.
+- **Less fold-in:** at 2437 MHz the channel 1 and 11 bursts at ±12–16 MHz sit
+  about 15 dB lower, at +15 dB over the floor instead of +30 to +32 dB.
+- **Same decoding:** `--combine` counted 1,343 frames against 1,344 at
+  2437 MHz and 407 against 414 at 5745 MHz. The noise correlation between the
+  chains didn't change.
+- **But it blanks:** exact-zero runs of 4–12 samples, on both chains at the
+  same instants, at 2.4 GHz and at 5745 MHz (35 to 400 per second there),
+  where mode `0x11` had none in 18 captures. Writing packet-detect suppression
+  early (§3) removes most of them, not all.
+
+So this fork selects mode `0x14` only when both chains and the channel filter
+are requested (`--chain both --channel-filter`, or Soapy `channel_filter` with
+two channels). Plain `--chain both` stays on mode `0x11`.
 
 ## 6. The second receive chain
 
@@ -557,10 +606,35 @@ carrier offset, the sample clock is within +0.1 ppm at 40 MSps and +0.14 ppm at
 80 MSps. The +40 ppm correction used elsewhere doesn't apply to this
 bring-up.
 
-**Retune time.** A live retune is 231 RF-bridge control transfers of about
-375 µs each over usbipd (about 87 ms). Skipping the pre-poll and command read
-when the bridge is already ready cuts it to 147 transfers, about 54 ms. A
-Raspberry Pi shows similar times, so the per-transfer cost isn't usbipd.
+**Retune time** (established). A live retune was 231 RF-bridge control
+transfers of about 375 µs each over usbipd (about 87 ms). Skipping the
+pre-poll and command read when the bridge is already ready cut it to 147
+transfers, about 54 ms. A Raspberry Pi shows similar times, so the
+per-transfer cost isn't usbipd. Two later steps:
+
+- **Host side, 54 transfers.** Each bridge command and its data go in one
+  8-byte vendor request. The read-modify-writes are answered from a copy of
+  the tuning registers that the capture last read or wrote. Over usbipd at
+  40 MSps a retune went from 52 to 19 ms within 2.4 GHz, 54 to 19 ms within
+  5 GHz and 61 to 21 ms between bands. In 800 retunes with the chip's AGC
+  running, the copy never disagreed with the hardware.
+- **On the chip, about 1.2 ms.** The device program gains an RF script
+  engine, after BirriaSweep's fast-sweep patch. The host uploads the same
+  register writes as a script, rings a doorbell and reads one status block.
+  Between sample packets the program runs at most one bridge step, so the
+  stream never waits. A retune took 1.1 ms within either band, 1.2 ms between
+  them and 1.2 ms at 80 MSps, about 0.6 ms of it on the chip. In 1,000
+  retunes 5 ms apart at 40 and at 80 MSps there were no failures and no
+  sample gaps, and reception after a retune matched the host path. The new signal is final
+  about 3 ms after the call returns. With a 5 ms dwell, `birria_sweep`
+  covers 2180 to 2620 MHz every 0.26 s and 4500 to 6625 MHz every 1.4 s.
+
+**Long soaks** (single run, 14 November). Through the SoapySDR module at
+2437 MHz with the host gain loop, 80 MSps on chain 0 ran for 2 hours and both
+chains (mode `0x11`) at 40 MSps each for 1 hour. Neither had an overflow, a
+timeout or a gain change. The usbipd working set stayed near 64 MB, and the
+host used about 0.28 of a CPU core. Hours of recording to disk, mode `0x14` and
+5 GHz weren't covered.
 
 ## 9. 5 GHz observations
 
@@ -779,10 +853,11 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 - **WSL2 firmware loading:** `firmware_class.path` resolves in the utility
   VM's namespace and doesn't find the files. Build them in with
   `CONFIG_EXTRA_FIRMWARE`.
-- **`CLOCK_MONOTONIC` in WSL2 ran 1.6% slow** against Windows time on this
-  host, so any host-timed rate test (SoapySDRUtil, GNU Radio `probe_rate`)
-  reads about 40.6 MSps for 40. Measure the sample clock against beacon
-  timestamps instead.
+- **`CLOCK_MONOTONIC` in WSL2 runs slow** against Windows time on this host,
+  by 1.6% on one day and nearly 10% on another. Host-timed rate tests
+  (SoapySDRUtil, GNU Radio `probe_rate`) therefore read high, about 40.6 MSps
+  for 40 at 1.6%. The soak tool (`tools/soak.py`) times rates with the
+  realtime clock. Measure the sample clock against beacon timestamps instead.
 - **Overrun bursts.** Overruns (firmware state 9) occasionally cluster for
   up to about 30 minutes with the host idle, then clear with nothing changed.
   Wait and retry; it isn't the hardware.
@@ -856,6 +931,9 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 - Whether the packet-detect, chain-select and gain-table results hold on the
   COMFAST board. A second EP-AX1672 matches the gain table.
 - Whether VCO trim fields can push the 2.4 GHz edge above 2652 MHz.
+- Why mode `0x14` still blanks in about one read in seven with packet-detect
+  suppression written early, and why it blanks at 5745 MHz but not at
+  5240 MHz.
 
 ## 14. Credits
 
@@ -864,6 +942,11 @@ using 0.81 CPU-seconds per second and 1.6 MB of output.
 - [Mtk79ICAP](https://github.com/MtkWifiRev/Mtk79ICAP) (vendor-firmware mt76
   fork) supplied the 2.4 GHz BW80 recipe, the gain-hold register layout, the
   tap-12/13 interpretation and independent confirmation of the blanking.
+- Flipper Devices' [`flipper-devel`](https://github.com/flipperdevices/BirriaSDR/tree/flipper-devel)
+  branch (Yury MonZon) supplied the frame-detector clear, the 128-byte-event
+  transport, mode `0x14` and the early packet-detect write.
+- [BirriaSweep](https://github.com/ZeroTasteGuy/BirriaSweep) by ZeroTasteGuy
+  is the model for the firmware RF script engine behind the on-chip retune.
 - [w1700k-sdr](https://github.com/h0m3us3r/w1700k-sdr) was the original lead
   for the PHY gain-register layout (credited upstream).
 - Upstream pull requests and issues on BirriaSDR (5 GHz in #8 and #9, other
