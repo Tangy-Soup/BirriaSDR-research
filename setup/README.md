@@ -43,7 +43,7 @@ You need:
 2. **Get the code.** In the Ubuntu terminal, either clone the release tag:
 
    ```sh
-   git clone --branch v2026.11.13.1 https://github.com/Tangy-Soup/BirriaSDR-research.git
+   git clone --branch v2026.11.18 https://github.com/Tangy-Soup/BirriaSDR-research.git
    cd BirriaSDR-research
    ```
 
@@ -100,7 +100,7 @@ time.
 ## Native Linux
 
 ```sh
-git clone --branch v2026.11.13.1 https://github.com/Tangy-Soup/BirriaSDR-research.git
+git clone --branch v2026.11.18 https://github.com/Tangy-Soup/BirriaSDR-research.git
 cd BirriaSDR-research
 bash setup/setup-linux.sh --all
 ```
