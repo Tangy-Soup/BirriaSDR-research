@@ -437,6 +437,15 @@ every 0.26 s, 4500 to 6625 MHz is 107 steps and repeats every 1.4 s, and
 without sample gaps.
 `--self-test` checks the spectrum scale without hardware.
 
+Even with the default `--usable`, a strong signal 30 to 32 MHz from a step's
+center can leave an image about 17 dB weaker in that step's outer 8 to 10 MHz.
+A 3 h log on 2026-11-14 had lines like this at 2497–2500 MHz (Wi-Fi channel 11
+at 2458–2460), and at 4940–4942, 5018–5020 and 5038–5040 MHz (a strong
+signal at about 4976–5001 MHz),
+while the neighbouring steps were at the floor. These are most likely images,
+not signals. Confirm a line at a step edge with `--usable 16e6`, or with steps
+offset by a few MHz.
+
 ## API
 
 The library follows the familiar enumerate, open, configure, read, cancel and

@@ -584,10 +584,23 @@ began; into RAM it was about 0.9/s.
 
 **A writer thread fixes most of that** (single comparison). With a thread and a RAM
 ring, 30 s at 80 MSps to disk had 2 and 6 gaps, alternating with the old writer's
-1,466 and 1,172. A 15 s run at 40 MSps had none. At least some of the remaining gaps are
-device-side: one overrun came with the USB queue at 45 of 512. A strict 80 MSps
+1,466 and 1,172. A 15 s run at 40 MSps had none. A strict 80 MSps
 recording still ends at an overrun now and then, so long ones need `--recover`.
 Moving the I/Q decode inline also cut it from 4,816 to 1,105 ns per packet.
+
+**Where the remaining gaps start is undetermined** (offline analysis of the
+stall logs). One overrun came with the USB queue at 45 of 512, which we first
+read as device-side. But the library's stall and queue figures see only the
+Linux side of usbipd. A stall in the submit direction (Linux to Windows)
+starves the device while completions keep arriving, so it shows as only a few
+milliseconds of completion gap. In the logs, a single stall longer than the
+queue's coverage was almost always followed by a gap (166 of 169 with 64
+transfers at 80 MSps). Even counting stalls that came back to back, 6 of the
+8 gaps with 192 transfers, and about 20% of those with 64, had no Linux-side
+stall long enough to explain them. Either a submit-direction stall or the
+device could cause those. The short (about 1 ms) stalls recur every
+4 MB or so of data, not on a host timer, and don't cause gaps. A run on native
+Windows, with no usbipd, would separate the two.
 
 **20 MSps.** A 47-tap host halfband (flat to 8.5 MHz, −57.8 dB from 11.5 MHz)
 gave no measurable aliasing. The alternative that keeps one ICAP word in four
