@@ -160,30 +160,68 @@ def symbols(c, start, count, positions=None, acquire=True, timing='track', combi
     symbol is a `rake` combination of chip-spaced lags.
     If `positions` is a list, the sample index of each symbol is appended.
     """
-    pos = acquire_timing(c, start) if acquire else start
+    key = (id(c), len(c), start, count, acquire, timing)
+    found = _POSITIONS.get(key) if _POSITIONS is not None else None
+    if found is None:
+        found = _symbol_positions(c, start, count, acquire, timing)
+        if _POSITIONS is not None:
+            _POSITIONS[key] = found
+    kind, p = found
+    if kind == 'smooth':
+        if positions is not None:
+            positions.extend(np.rint(p).astype(int).tolist())
+        return rake(c, p) if combine else _interp(c, p)
+    if positions is not None:
+        positions.extend(p)
+    if combine and p:
+        return rake(c, p)
+    return c[np.array(p)] if p else np.array([])
+
+
+# decode_ppdu tries several demodulator modes on one candidate; modes that share timing
+# ('track' and 'track_rake') reuse the positions. Keyed per call, cleared after it.
+_POSITIONS = None
+
+
+def _acquire(c, start):
+    key = ('acquire', id(c), len(c), start)
+    if _POSITIONS is not None and key in _POSITIONS:
+        return _POSITIONS[key]
+    pos = acquire_timing(c, start)
+    if _POSITIONS is not None:
+        _POSITIONS[key] = pos
+    return pos
+
+
+def _symbol_positions(c, start, count, acquire, timing):
+    """('smooth', fractional positions) or ('track', integer positions) for `symbols`."""
+    pos = _acquire(c, start) if acquire else start
     if timing == 'smooth':
         p = smooth_timing(c, pos, count)
         if p is not None:
-            if positions is not None:
-                positions.extend(np.rint(p).astype(int).tolist())
-            return rake(c, p) if combine else _interp(c, p)
-    out, track = [], []
-    for index in range(count):
+            return 'smooth', p
+    # One timing step per 16-symbol block, then the block's positions at once. Same steps and
+    # positions as a per-symbol loop: the first symbol of a block needs pos + 2 < len(c) before
+    # the step, the others after it.
+    track, index, offsets = [], 0, np.arange(-2, 3)
+    while index < count:
         if pos + 2 >= len(c):
             break
-        if index % 16 == 0 and pos >= 2:
+        if pos >= 2:
             centers = pos + SPS * np.arange(min(16, (len(c) - pos - 3) // SPS))
             if len(centers):
-                offsets = np.arange(-2, 3)
                 strength = np.abs(c[centers[:, None] + offsets]).sum(axis=0)
                 step = int(np.argmax(strength)) - 2
                 pos += max(-1, min(1, step))
-        out.append(c[pos])
-        track.append(pos)
-        pos += SPS
-    if positions is not None:
-        positions.extend(track)
-    return rake(c, track) if combine and track else np.array(out)
+        m = min(16, count - index)
+        block = pos + SPS * np.arange(m)
+        n = 1 + int(np.count_nonzero(block[1:] + 2 < len(c)))
+        track.extend(block[:n].tolist())
+        index += n
+        pos = track[-1] + SPS
+        if n < m:
+            break
+    return 'track', track
 
 
 RAKE_LAGS = (-8, -4, 4, 8, 12)   # chip-spaced lags (44 MS/s samples) combined with the tracked one
@@ -308,6 +346,15 @@ def decode_ppdu(c, a, b, phase_hint=None, cck_samples=None, soft=None):
     while no FCS-valid result exists, and the first FCS-valid result is kept
     (`demod` names its mode). Otherwise the primary result is returned.
     """
+    global _POSITIONS
+    _POSITIONS = {}
+    try:
+        return _decode_modes(c, a, b, phase_hint, cck_samples, soft)
+    finally:
+        _POSITIONS = None
+
+
+def _decode_modes(c, a, b, phase_hint, cck_samples, soft):
     r = _decode_mode(c, a, b, phase_hint, cck_samples, soft, PRIMARY)
     if r is None or r.get('fcs_ok'):
         return r
@@ -332,7 +379,7 @@ def _decode_mode(c, a, b, phase_hint, cck_samples, soft, mode):
         return r
     if phase is None:   # no preamble or truncated: phase is recomputed the same way
         phase = phase_hint if phase_hint is not None else _start_phase(c, a)
-    if phase is None or acquire_timing(c, a + phase) == a + phase:
+    if phase is None or _acquire(c, a + phase) == a + phase:
         return r
     retry_soft = {} if soft is not None else None
     r0 = _decode_ppdu(c, a, b, phase_hint, cck_samples, retry_soft, False, timing, combine)
@@ -346,6 +393,18 @@ def _decode_mode(c, a, b, phase_hint, cck_samples, soft, mode):
             soft.update(retry_soft)
         return r0
     return r
+
+
+_SFD_BITS = np.array(SFD, dtype=np.int8)
+_SHORT_SFD_BITS = np.array([(0x05CF >> i) & 1 for i in range(16)], dtype=np.int8)
+
+
+def _find_bits(d, pattern):
+    """First k with d[k:k + len(pattern)] == pattern, -1 if none (str.find on the 0/1 text)."""
+    if len(d) < len(pattern):
+        return -1
+    hit = np.flatnonzero((np.lib.stride_tricks.sliding_window_view(d, len(pattern)) == pattern).all(axis=1))
+    return int(hit[0]) if len(hit) else -1
 
 
 def _start_phase(c, a):
@@ -367,14 +426,14 @@ def _decode_ppdu(c, a, b, phase_hint, cck_samples, soft, acquire, timing='track'
     sym, carrier_phase = correct_dsss_carrier(sym)
     raw = (np.real(sym[1:] * np.conj(sym[:-1])) < 0).astype(np.int8)
     d = descramble(raw)
-    text = ''.join(map(str, d[:300]))
-    k = text.find(''.join(map(str, SFD)))
+    head = d[:300]
+    k = _find_bits(head, _SFD_BITS)
     short = False
     if k >= 0:
         h = d[k + 16:k + 64]
         start, history = k + 64, raw[k + 57:k + 64]
     else:
-        k = text.find(''.join(str((0x05CF >> i) & 1) for i in range(16)))
+        k = _find_bits(head, _SHORT_SFD_BITS)
         if k < 7:
             return {'error': 'no supported DSSS preamble'}
         short = True

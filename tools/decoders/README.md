@@ -48,8 +48,21 @@ On an 8-file regression set, every valid frame, status and record is unchanged.
 Only float diagnostics move: DSSS `cfo_hz` by under 1 Hz, and the two-chain
 `ltf_match` and noise figures in the fourth decimal. Wall time: 2 s on channel 11
 went from 60 to 43 s, a 1 s two-chain `--combine` file from 37 to 19 s, and 0.37 s
-on channel 1 from 7.4 to 5.2 s. What remains is per-packet work: DSSS symbol timing
-and RAKE, OFDM candidates, and about 1.5 s of start-up.
+on channel 1 from 7.4 to 5.2 s.
+
+Per-packet work was then cut the same way, again with identical output:
+- **DSSS:** symbol tracking runs once per 16-symbol block, because the timing only
+  moves once per block. Each candidate's tracked positions and timing are cached, so
+  the RAKE modes reuse them.
+- **OFDM:** one demap, deinterleave and FFT covers all symbols of a PPDU. The pilot
+  phase is fitted for all symbols at once. The 52-point re-estimate fit stays per
+  symbol, because batching it changed the results.
+
+On a 25-file regression set every frame and record is identical, and total time fell
+from 700 to 534 s (−24%), most on the busiest 2.4 GHz files. About a quarter of what
+remains on busy 2.4 GHz channels is DSSS sync-search hits that turn out to have no
+DSSS preamble. Many sit inside frames that already decoded. Skipping them would lose
+overlapping frames, so they are still tried.
 
 `--jobs N` decodes N half-second windows in parallel forked processes. Windows are
 independent, so the output is identical to `--jobs 1`. Each worker holds one window,

@@ -295,6 +295,49 @@ def pilot_phase(raw, expected, trend):
     the true phase moves slowly (residual CFO plus drift; on the EDUP the
     per-symbol phase jitter measured against re-encoded frames was no larger
     than estimation noise at 5 GHz)."""
+    # All symbols at once: one multi-column polyfit per distinct weight vector (STBC pilots
+    # differ per symbol, one stream's don't); the same values as one symbol at a time.
+    raw = np.asarray(raw)
+    e = np.asarray(expected)
+    q = raw[:, PILOTS % 64] * np.conj(e)
+    phase = np.unwrap(np.angle(q), axis=1)
+    if not trend:
+        c = np.polyfit(PILOTS, phase.T, 1)
+        return list(zip(c[1], c[0]))
+    w = np.abs(e)
+    slopes = np.empty(len(q))
+    groups = {}
+    for i, row in enumerate(w):
+        groups.setdefault(row.tobytes(), []).append(i)
+    for rows in groups.values():
+        slopes[rows] = np.polyfit(PILOTS, phase[rows].T, 1, w=w[rows[0]])[0]
+    if len(q) > 1:
+        n = np.arange(len(q))
+        slopes = np.polyval(np.polyfit(n, slopes, 1), n)
+    offsets = np.angle(np.sum(q * np.exp(-1j * slopes[:, None] * PILOTS), axis=1))
+    if len(q) > 2:
+        n = np.arange(len(q))
+        offsets = np.unwrap(offsets)
+        line = np.polyval(np.polyfit(n, offsets, 1), n)
+        width = 2 * CPE_SMOOTH + 1
+        offsets = line + np.convolve(np.pad(offsets - line, CPE_SMOOTH, mode='edge'), np.ones(width) / width, 'valid')
+    return list(zip(offsets, slopes))
+
+
+def derotated(corrected, starts, expected, data, trend):
+    """Data bins of the symbols at FFT starts, pilot phase removed."""
+    cuts = [corrected[a:a + 64] for a in starts]
+    if any(len(v) != 64 for v in cuts):
+        raw = [np.fft.fft(v) for v in cuts]
+        return [bins[data % 64] * np.exp(-1j * (offset + slope * data))
+                for bins, (offset, slope) in zip(raw, _pilot_phase_rows(raw, expected, trend))]
+    raw = np.fft.fft(np.stack(cuts), axis=-1)
+    phases = pilot_phase(raw, expected, trend)
+    return [bins[data % 64] * np.exp(-1j * (offset + slope * data)) for bins, (offset, slope) in zip(raw, phases)]
+
+
+def _pilot_phase_rows(raw, expected, trend):
+    """pilot_phase one symbol at a time (the original form): symbols of unequal length."""
     q = [bins[PILOTS % 64] * np.conj(e) for bins, e in zip(raw, expected)]
     if not trend:
         return [tuple(np.polyfit(PILOTS, np.unwrap(np.angle(v)), 1)[::-1]) for v in q]
@@ -310,13 +353,6 @@ def pilot_phase(raw, expected, trend):
         width = 2 * CPE_SMOOTH + 1
         offsets = line + np.convolve(np.pad(offsets - line, CPE_SMOOTH, mode='edge'), np.ones(width) / width, 'valid')
     return list(zip(offsets, slopes))
-
-
-def derotated(corrected, starts, expected, data, trend):
-    """Data bins of the symbols at FFT starts, pilot phase removed."""
-    raw = [np.fft.fft(corrected[a:a + 64]) for a in starts]
-    return [bins[data % 64] * np.exp(-1j * (offset + slope * data))
-            for bins, (offset, slope) in zip(raw, pilot_phase(raw, expected, trend))]
 
 
 def equalize(corrected, h, starts, refs, data, trend=False):
@@ -627,8 +663,10 @@ def decode_candidate(x, candidate, coarse):
     last = {}
 
     def payload(symbols):
-        soft = np.concatenate([deinterleave(demap(symbol, bpsc, reliability), bpsc, columns, carriers)
-                               for symbol in symbols])
+        # All symbols in one demap and deinterleave: elementwise arithmetic and min, so the same
+        # values as one symbol at a time.
+        soft = deinterleave(demap(np.concatenate(symbols), bpsc, np.tile(reliability, len(symbols))),
+                            bpsc, columns, carriers)
         coded = depuncture(soft, nsym * dbps, dbps, pattern)[:16 + 8 * length + 6]
         if ('ofdm_format' in result and len(coded) > SERVICE_CHECK_MIN and
                 service_fails(viterbi(coded[:SERVICE_CHECK_STEPS], terminated=False))):
